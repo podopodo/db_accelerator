@@ -4,6 +4,8 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a.svg)](LICENSE)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-c2410c.svg)](#project-status)
 
+![Database Accelerator: 64 clients through 8 database connections](docs/assets/social-card.png)
+
 Database Accelerator is an experimental MySQL/MariaDB connection gateway written in Go. The current competition build provides a conservative protocol-aware connection pool, a transparent compatibility relay, live upstream diagnostics, and a responsive embedded operations dashboard in one binary. Schema-aware read acceleration remains planned.
 
 Applications should eventually need only a connection host, port, user, or password change. Database Accelerator is a proxy and accelerator. It is not a database, replica, shard manager, or asynchronous write queue.
@@ -26,7 +28,13 @@ The current build has two explicit SQL listener modes:
 
 Pooled mode has been exercised with the unmodified MariaDB command-line client and Go MySQL driver against MariaDB 11.7.2. The integration gate covers real DDL, inserts, reads, commit, rollback, and 64 concurrent logical clients sharing one upstream connection. This proves 64:1 connection fan-in for that small autocommit test lane; it is not a 64x query-throughput or production compatibility claim.
 
-The single binary also embeds a responsive four-view operations console and live read-only status API. It reports upstream health, server metadata, gateway traffic, connection pressure and history, build identity, configured guardrails, and the exact acceleration capability currently enabled. The interface embeds its fonts and assets and needs no runtime CDN. The control plane supports token login, an HTTP-only same-site session cookie, logout, and basic login throttling. Role-based authorization, prepared statements, client TLS, multiple database identities, caching, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
+The single binary also embeds a responsive five-view operations console and live read-only status API. It reports upstream health, server metadata, gateway traffic, connection pressure and history, measured benchmark evidence, build identity, configured guardrails, and the exact acceleration capability currently enabled. The interface embeds its fonts and operational assets and needs no runtime CDN. The control plane supports token login, an HTTP-only same-site session cookie, logout, and basic login throttling. Role-based authorization, prepared statements, client TLS, multiple database identities, caching, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
+
+### Measured local evidence
+
+An isolated benchmark against the connected MariaDB 11.7.2 server measured 64 logical clients through 8 upstream connections: **87.5% fewer physical connections**, **8.0x fan-in**, and **zero errors across 9,000 measured operations**. This is the connection-capacity win the product targets.
+
+The same run also showed the current cost honestly: direct local point reads delivered higher throughput, while the accelerator recorded 82.45% lower throughput and 40.07% worse p95 latency. No cache was involved. Results apply only to that machine and workload. See the [raw report](docs/benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json) and [benchmark method](docs/BENCHMARKING.md).
 
 ### Pooled-mode safety boundary
 
@@ -82,7 +90,9 @@ accelerator version
 accelerator config init --output accelerator.yaml
 accelerator config validate --config accelerator.yaml
 accelerator doctor --config accelerator.yaml
+accelerator benchmark --config accelerator.yaml
 accelerator serve --config accelerator.yaml
+accelerator healthcheck --url http://127.0.0.1:9090/readyz
 ```
 
 After `serve` starts:
@@ -113,6 +123,21 @@ Start from [`accelerator.example.yaml`](accelerator.example.yaml). Secrets are r
 
 For local development, use a long random admin token. For example, set `DBA_ADMIN_TOKEN` in the process environment before `serve`. The token is compared in constant time and exchanged for an eight-hour HTTP-only, SameSite=Strict cookie; it is not written to browser storage.
 
+## Docker
+
+The repository includes a multi-stage `Dockerfile` and `compose.yaml`. Compose runs the process as a non-root user, drops Linux capabilities, mounts credentials as secret files, persists runtime evidence, and checks `/readyz`.
+
+```text
+# First create .secrets/admin_token and .secrets/upstream_password
+docker compose up --build -d
+```
+
+See [deployment](docs/DEPLOYMENT.md) for upstream settings, passwordless local development, ports, and security boundaries.
+
+## Releases
+
+GitHub Actions builds release archives for Windows amd64, Linux amd64, and macOS Darwin arm64. Tags encode confidence: `-experimental.N`, `-beta.N`, `-rc.N`, then V1+ stable. Stable publication is blocked until the matching delivery gate is checked. See [release policy](docs/RELEASING.md).
+
 ## Documentation
 
 - [Product contract](docs/PRODUCT_REQUIREMENTS.md)
@@ -121,6 +146,9 @@ For local development, use a long random admin token. For example, set `DBA_ADMI
 - [Security policy](SECURITY.md)
 - [Threat model](docs/THREAT_MODEL.md)
 - [Testing policy](docs/TESTING.md)
+- [Benchmark method and evidence](docs/BENCHMARKING.md)
+- [Container deployment](docs/DEPLOYMENT.md)
+- [Release confidence policy](docs/RELEASING.md)
 - [GUI quality contract](plans/GUI_QUALITY_CONTRACT.md)
 - [Support policy](SUPPORT.md)
 - [Contributing](CONTRIBUTING.md)

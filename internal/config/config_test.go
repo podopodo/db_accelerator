@@ -202,6 +202,42 @@ func TestEmptyPasswordRequiresExplicitOptIn(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSecretsSupportMountedFilesAndDirectPrecedence(t *testing.T) {
+	cfg := Default()
+	cfg.Upstream.Enabled = true
+	cfg.Upstream.PasswordEnv = "DBA_TEST_MOUNTED_PASSWORD_7B31"
+	path := filepath.Join(t.TempDir(), "password")
+	writeTestFile(t, path, "mounted-secret\r\n")
+	t.Setenv(cfg.Upstream.PasswordEnv+"_FILE", path)
+
+	secrets, err := ResolveEnvironmentSecrets(cfg)
+	if err != nil {
+		t.Fatalf("resolve mounted secret: %v", err)
+	}
+	if secrets.UpstreamPassword.Reveal() != "mounted-secret" {
+		t.Fatalf("mounted secret = %q", secrets.UpstreamPassword.Reveal())
+	}
+
+	t.Setenv(cfg.Upstream.PasswordEnv, "direct-secret")
+	secrets, err = ResolveEnvironmentSecrets(cfg)
+	if err != nil {
+		t.Fatalf("resolve direct secret: %v", err)
+	}
+	if secrets.UpstreamPassword.Reveal() != "direct-secret" {
+		t.Fatal("direct environment secret did not take precedence")
+	}
+}
+
+func TestEnvironmentSecretsReportUnreadableFile(t *testing.T) {
+	cfg := Default()
+	cfg.Upstream.Enabled = true
+	cfg.Upstream.PasswordEnv = "DBA_TEST_MISSING_PASSWORD_932A"
+	t.Setenv(cfg.Upstream.PasswordEnv+"_FILE", filepath.Join(t.TempDir(), "missing"))
+	if _, err := ResolveEnvironmentSecrets(cfg); err == nil || !strings.Contains(err.Error(), "read secret file") {
+		t.Fatalf("unreadable file error = %v", err)
+	}
+}
+
 func TestWriteDefaultRefusesOverwrite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "accelerator.yaml")
 	if err := WriteDefault(path, false); err != nil {

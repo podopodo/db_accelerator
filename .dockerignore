@@ -1,0 +1,16 @@
+.git
+.github
+.agents
+.codex
+.secrets
+bin
+dist
+tmp
+data
+data-local
+artifacts
+coverage*.txt
+coverage*.html
+*.exe
+accelerator.local.yaml
+accelerator.managed.yaml

@@ -1,0 +1,46 @@
+services:
+  accelerator:
+    build:
+      context: .
+      args:
+        VERSION: ${DBA_IMAGE_TAG:-experimental}
+        COMMIT: ${DBA_IMAGE_COMMIT:-local}
+        BUILD_DATE: ${DBA_IMAGE_BUILD_DATE:-unknown}
+    image: ghcr.io/podopodo/db_accelerator:${DBA_IMAGE_TAG:-experimental}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${DBA_MYSQL_PORT:-13307}:3307"
+      - "${DBA_ADMIN_PORT:-19090}:9090"
+    environment:
+      DBA_UPSTREAM_HOST: ${DBA_UPSTREAM_HOST:-host.docker.internal}
+      DBA_UPSTREAM_PORT: ${DBA_UPSTREAM_PORT:-3306}
+      DBA_UPSTREAM_USER: ${DBA_UPSTREAM_USER:-accelerator}
+      DBA_UPSTREAM_DATABASE: ${DBA_UPSTREAM_DATABASE:-app}
+      DBA_UPSTREAM_TLS_MODE: ${DBA_UPSTREAM_TLS_MODE:-preferred}
+      DBA_UPSTREAM_ALLOW_EMPTY_PASSWORD: ${DBA_UPSTREAM_ALLOW_EMPTY_PASSWORD:-false}
+      DBA_ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      DBA_UPSTREAM_PASSWORD_FILE: /run/secrets/upstream_password
+    secrets:
+      - admin_token
+      - upstream_password
+    volumes:
+      - accelerator-data:/var/lib/database-accelerator
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+
+secrets:
+  admin_token:
+    file: ./.secrets/admin_token
+  upstream_password:
+    file: ./.secrets/upstream_password
+
+volumes:
+  accelerator-data:

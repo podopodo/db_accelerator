@@ -6,8 +6,9 @@
   <meta name="color-scheme" content="dark light">
   <meta name="description" content="Local operations console for Database Accelerator">
   <title>Database Accelerator — Operations Console</title>
-  <link rel="stylesheet" href="/assets/app.css?v=3">
-  <script src="/assets/app.js?v=3" defer></script>
+  <link rel="icon" href="/assets/brand/logo-mark.svg?v=1" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css?v=4">
+  <script src="/assets/app.js?v=4" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to operations</a>
@@ -15,7 +16,7 @@
   <section class="auth-gate" id="auth-gate" aria-labelledby="auth-title" aria-describedby="auth-description">
     <div class="auth-frame">
       <div class="auth-context" aria-hidden="true">
-        <div class="auth-brand"><span>DA</span><strong>Database<br>Accelerator</strong></div>
+        <div class="auth-brand"><img src="/assets/brand/logo-mark.svg?v=1" alt=""><strong>Database<br>Accelerator</strong></div>
         <div class="auth-statement">
           <p>CONTROL PLANE / LOCAL</p>
           <strong>Operational truth stays behind one deliberate gate.</strong>
@@ -51,7 +52,7 @@
   <div class="app-shell">
     <aside class="rail" aria-label="Primary navigation">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true"><span>DA</span></div>
+        <img class="brand-logo" src="/assets/brand/logo-mark.svg?v=1" alt="">
         <div class="brand-copy">
           <strong>Database</strong>
           <span>Accelerator</span>
@@ -68,14 +69,17 @@
         <button class="nav-item is-active" type="button" data-route="overview" aria-current="page">
           <span class="nav-glyph" aria-hidden="true">01</span><span>Overview</span>
         </button>
+        <button class="nav-item" type="button" data-route="performance">
+          <span class="nav-glyph" aria-hidden="true">02</span><span>Performance</span>
+        </button>
         <button class="nav-item" type="button" data-route="connections">
-          <span class="nav-glyph" aria-hidden="true">02</span><span>Connections</span>
+          <span class="nav-glyph" aria-hidden="true">03</span><span>Connections</span>
         </button>
         <button class="nav-item" type="button" data-route="database">
-          <span class="nav-glyph" aria-hidden="true">03</span><span>Database</span>
+          <span class="nav-glyph" aria-hidden="true">04</span><span>Database</span>
         </button>
         <button class="nav-item" type="button" data-route="diagnostics">
-          <span class="nav-glyph" aria-hidden="true">04</span><span>Diagnostics</span>
+          <span class="nav-glyph" aria-hidden="true">05</span><span>Diagnostics</span>
         </button>
       </nav>
 
@@ -236,6 +240,88 @@
                 <div><dt>Autocommit</dt><dd id="db-autocommit">—</dd></div>
               </dl>
               <button class="text-link" type="button" data-route-jump="database">Open database details <span aria-hidden="true">→</span></button>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view="performance" aria-labelledby="performance-title" hidden>
+          <header class="view-header">
+            <div><p class="kicker">Measured proof</p><h1 id="performance-title">Performance</h1><p class="view-description">Real comparison against the configured MariaDB. Wins and overhead stay visible together.</p></div>
+            <span class="page-state performance-confidence" id="benchmark-confidence">not measured</span>
+          </header>
+
+          <section class="benchmark-empty" id="benchmark-empty" aria-labelledby="benchmark-empty-title">
+            <span class="section-index">No local evidence yet</span>
+            <h2 id="benchmark-empty-title">Run the bounded benchmark.</h2>
+            <p>It creates an isolated temporary database, compares direct and accelerated paths, saves the evidence, then removes its test data.</p>
+            <code>accelerator benchmark --config accelerator.yaml</code>
+          </section>
+
+          <div class="benchmark-report" id="benchmark-report" hidden>
+            <section class="benchmark-hero" aria-labelledby="benchmark-hero-title">
+              <div class="benchmark-claim">
+                <p class="section-index">Measured on this database</p>
+                <strong id="benchmark-reduction">—</strong>
+                <h2 id="benchmark-hero-title">fewer database connections</h2>
+                <p id="benchmark-connection-path">— direct → — accelerated</p>
+              </div>
+              <div class="benchmark-verdict">
+                <span>Connection capacity proof</span>
+                <strong>More clients. Smaller database footprint.</strong>
+                <p>This benchmark tests connection efficiency. It does not claim faster SQL.</p>
+              </div>
+            </section>
+
+            <section class="benchmark-kpis" aria-label="Benchmark highlights">
+              <div><span>Connections saved</span><strong id="benchmark-saved">—</strong><small>physical sockets avoided</small></div>
+              <div><span>Client fan-in</span><strong id="benchmark-fanin">—</strong><small>logical clients per DB link</small></div>
+              <div><span>Clients ready</span><strong id="benchmark-ready">—</strong><small id="benchmark-ready-detail">direct versus accelerated</small></div>
+              <div><span>Errors</span><strong id="benchmark-errors">—</strong><small id="benchmark-operations">across measured operations</small></div>
+            </section>
+
+            <div class="benchmark-grid">
+              <section class="comparison-panel" aria-labelledby="comparison-title">
+                <header class="section-bar"><div><p class="section-index">Direct versus accelerator</p><h2 id="comparison-title">Measured trade-offs</h2></div><span class="source-label">lower is better except throughput</span></header>
+                <div class="comparison-row">
+                  <div class="comparison-label"><strong>Database connections</strong><small>peak physical links</small></div>
+                  <div class="comparison-bars"><div><span>Direct</span><i><b id="bar-connections-direct"></b></i><strong id="connections-direct">—</strong></div><div><span>Accelerated</span><i><b id="bar-connections-accelerated"></b></i><strong id="connections-accelerated">—</strong></div></div>
+                  <span class="comparison-outcome is-win" id="connections-outcome">—</span>
+                </div>
+                <div class="comparison-row">
+                  <div class="comparison-label"><strong>Client readiness</strong><small>all logical clients connected</small></div>
+                  <div class="comparison-bars"><div><span>Direct</span><i><b id="bar-ready-direct"></b></i><strong id="ready-direct">—</strong></div><div><span>Accelerated</span><i><b id="bar-ready-accelerated"></b></i><strong id="ready-accelerated">—</strong></div></div>
+                  <span class="comparison-outcome" id="ready-outcome">—</span>
+                </div>
+                <div class="comparison-row">
+                  <div class="comparison-label"><strong>Read throughput</strong><small>point reads per second</small></div>
+                  <div class="comparison-bars"><div><span>Direct</span><i><b id="bar-throughput-direct"></b></i><strong id="throughput-direct">—</strong></div><div><span>Accelerated</span><i><b id="bar-throughput-accelerated"></b></i><strong id="throughput-accelerated">—</strong></div></div>
+                  <span class="comparison-outcome" id="throughput-outcome">—</span>
+                </div>
+                <div class="comparison-row">
+                  <div class="comparison-label"><strong>P95 read latency</strong><small>95th percentile</small></div>
+                  <div class="comparison-bars"><div><span>Direct</span><i><b id="bar-p95-direct"></b></i><strong id="p95-direct">—</strong></div><div><span>Accelerated</span><i><b id="bar-p95-accelerated"></b></i><strong id="p95-accelerated">—</strong></div></div>
+                  <span class="comparison-outcome" id="p95-outcome">—</span>
+                </div>
+              </section>
+
+              <aside class="evidence-panel" aria-labelledby="evidence-title">
+                <span class="capability-label">Evidence card</span>
+                <h2 id="evidence-title">Local. Bounded. Reproducible.</h2>
+                <dl>
+                  <div><dt>Database</dt><dd id="benchmark-server">—</dd></div>
+                  <div><dt>Workload</dt><dd id="benchmark-workload">—</dd></div>
+                  <div><dt>Dataset</dt><dd id="benchmark-dataset">—</dd></div>
+                  <div><dt>Query</dt><dd id="benchmark-query">—</dd></div>
+                  <div><dt>Completed</dt><dd id="benchmark-completed">—</dd></div>
+                  <div><dt>Run ID</dt><dd id="benchmark-run-id">—</dd></div>
+                </dl>
+                <p id="benchmark-scope">Evidence applies only to this recorded environment.</p>
+              </aside>
+            </div>
+
+            <section class="benchmark-honesty" aria-label="Benchmark interpretation">
+              <strong>Connection capacity, not benchmark theater.</strong>
+              <p id="benchmark-caveat">Throughput and latency can improve or regress. Both remain visible.</p>
             </section>
           </div>
         </section>

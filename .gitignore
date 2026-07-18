@@ -9,6 +9,7 @@ coverage*.html
 
 # Runtime state
 /data/
+/data-local/
 /logs/
 /tmp/
 accelerator.local.yaml
@@ -20,6 +21,8 @@ accelerator.managed.yaml
 !.env.example
 *.pem
 *.key
+/.secrets/*
+!/.secrets/README.md
 
 # Editors and operating systems
 .idea/

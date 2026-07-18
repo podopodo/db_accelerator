@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -66,4 +67,37 @@ func ResolveSecrets(cfg Config, lookup func(string) (string, bool)) (Secrets, er
 	}
 	secrets.UpstreamPassword = Secret{value: value}
 	return secrets, nil
+}
+
+// ResolveEnvironmentSecrets supports both NAME and NAME_FILE. Direct values
+// win. File references make container secret mounts usable without exposing
+// credentials in process environment values.
+func ResolveEnvironmentSecrets(cfg Config) (Secrets, error) {
+	var lookupErr error
+	lookup := func(name string) (string, bool) {
+		if value, ok := os.LookupEnv(name); ok {
+			return value, true
+		}
+		path, ok := os.LookupEnv(name + "_FILE")
+		if !ok || strings.TrimSpace(path) == "" {
+			return "", false
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			lookupErr = fmt.Errorf("read secret file for %s: %w", name, err)
+			return "", false
+		}
+		if len(data) > 64<<10 {
+			lookupErr = fmt.Errorf("secret file for %s exceeds 64 KiB", name)
+			return "", false
+		}
+		value := strings.TrimSuffix(string(data), "\n")
+		value = strings.TrimSuffix(value, "\r")
+		return value, true
+	}
+	secrets, err := ResolveSecrets(cfg, lookup)
+	if lookupErr != nil {
+		return Secrets{}, lookupErr
+	}
+	return secrets, err
 }

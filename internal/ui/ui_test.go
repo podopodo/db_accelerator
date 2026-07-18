@@ -19,6 +19,7 @@ func TestEmbeddedDashboardAndAssets(t *testing.T) {
 		{path: "/", contentType: "text/html", contains: "Connection Pressure Map"},
 		{path: "/assets/app.css", contentType: "text/css", contains: "--hue-1-500"},
 		{path: "/assets/app.js", contentType: "application/javascript", contains: "/api/v1/status"},
+		{path: "/assets/brand/logo-mark.svg", contentType: "image/svg+xml", contains: "Database Accelerator mark"},
 		{path: "/assets/fonts/BricolageGrotesque-Variable.ttf", contentType: "font/ttf"},
 	} {
 		t.Run(test.path, func(t *testing.T) {
@@ -51,8 +52,13 @@ func TestDashboardQualityContractAssets(t *testing.T) {
 	css := readEmbedded(t, "assets/app.css")
 	script := readEmbedded(t, "assets/app.js")
 	combined := strings.ToLower(string(index) + string(css) + string(script))
-	if !strings.Contains(string(index), "/assets/app.css?v=3") || !strings.Contains(string(index), "/assets/app.js?v=3") {
+	if !strings.Contains(string(index), "/assets/app.css?v=4") || !strings.Contains(string(index), "/assets/app.js?v=4") {
 		t.Fatal("dashboard assets are missing their binary revision key")
+	}
+	for _, marker := range []string{"data-view=\"performance\"", "benchmark-reduction", "benchmark-caveat"} {
+		if !strings.Contains(string(index), marker) {
+			t.Fatalf("dashboard performance evidence missing %q", marker)
+		}
 	}
 
 	for _, forbidden := range []string{

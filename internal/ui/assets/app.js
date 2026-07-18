@@ -6,8 +6,8 @@
   const text = (id, value) => { const node = byId(id); if (node) node.textContent = value; };
   const integer = (value) => new Intl.NumberFormat().format(Number(value || 0));
   const number = (value) => Number(value || 0);
-  const routes = ["overview", "connections", "database", "diagnostics"];
-  const routeLabels = { overview: "Overview", connections: "Connections", database: "Database", diagnostics: "Diagnostics" };
+  const routes = ["overview", "performance", "connections", "database", "diagnostics"];
+  const routeLabels = { overview: "Overview", performance: "Performance", connections: "Connections", database: "Database", diagnostics: "Diagnostics" };
   const samples = [];
   const activity = [];
   let previous = null;
@@ -40,6 +40,24 @@
     if (!value || value === "unknown") return "unknown";
     const date = new Date(value);
     return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
+  };
+
+  const formatMilliseconds = (value) => number(value) === 0 ? "<0.001 ms" : `${number(value).toFixed(number(value) < 10 ? 3 : 2)} ms`;
+  const formatRate = (value) => `${integer(Math.round(number(value)))} /s`;
+  const signedPercent = (value) => `${number(value) >= 0 ? "+" : "−"}${Math.abs(number(value)).toFixed(2)}%`;
+
+  const setOutcome = (id, value, positiveLabel = "improved", negativeLabel = "regressed") => {
+    const node = byId(id);
+    if (!node) return;
+    const result = number(value);
+    node.className = `comparison-outcome ${result >= 0 ? "is-win" : "is-loss"}`;
+    node.textContent = `${signedPercent(result)} ${result >= 0 ? positiveLabel : negativeLabel}`;
+  };
+
+  const setPairBars = (directID, acceleratedID, direct, accelerated) => {
+    const maximum = Math.max(number(direct), number(accelerated), 0.000001);
+    byId(directID).style.width = `${Math.max(1, number(direct) / maximum * 100)}%`;
+    byId(acceleratedID).style.width = `${Math.max(1, number(accelerated) / maximum * 100)}%`;
   };
 
   const setSignal = (id, state) => {
@@ -84,6 +102,7 @@
   const recordChanges = (data) => {
     if (!previous) {
       addActivity("Runtime snapshot loaded", `${data.upstream.status} upstream · ${data.relay.mode}`);
+      if (data.benchmark?.available) addActivity("Measured benchmark loaded", data.benchmark.report.run_id);
       previous = data;
       return;
     }
@@ -96,6 +115,7 @@
     if (relayErrors > 0) addActivity(`${relayErrors} relay error${relayErrors === 1 ? "" : "s"}`, "inspect client and database logs");
     if (dialErrors > 0) addActivity(`${dialErrors} upstream dial failure${dialErrors === 1 ? "" : "s"}`, data.upstream.address);
     if (data.upstream.status !== previous.upstream.status) addActivity(`Upstream changed to ${data.upstream.status}`, data.upstream.error || data.upstream.address);
+    if (data.benchmark?.report?.run_id && data.benchmark.report.run_id !== previous.benchmark?.report?.run_id) addActivity("New benchmark evidence loaded", data.benchmark.report.run_id);
     previous = data;
   };
 
@@ -213,6 +233,69 @@
     if (upstreamError) text("blocking-announcement", `Database degraded. ${data.pressure.safe_action}`);
   };
 
+  const renderBenchmark = (status) => {
+    const available = Boolean(status?.available && status.report);
+    byId("benchmark-empty").hidden = available;
+    byId("benchmark-report").hidden = !available;
+    text("benchmark-confidence", status?.error ? "evidence error" : available ? "local evidence" : "not measured");
+    if (!available) {
+      if (status?.error) {
+        text("benchmark-empty-title", "Saved evidence could not be read.");
+        const detail = byId("benchmark-empty").querySelector("p");
+        if (detail) detail.textContent = status.error;
+      }
+      return;
+    }
+
+    const report = status.report;
+    const direct = report.direct;
+    const accelerated = report.accelerator;
+    const gains = report.gains;
+    const workload = report.workload;
+    const environment = report.environment;
+    const totalOperations = number(workload.operations_per_path) * (number(workload.direct_runs) + 1);
+    const totalErrors = number(direct.errors) + number(accelerated.errors);
+
+    text("benchmark-reduction", `${number(gains.connection_reduction_percent).toFixed(1)}%`);
+    text("benchmark-connection-path", `${integer(direct.peak_database_connections)} direct → ${integer(accelerated.peak_database_connections)} accelerated`);
+    text("benchmark-saved", integer(gains.connections_saved));
+    text("benchmark-fanin", `${number(gains.fan_in_ratio).toFixed(1)}×`);
+    text("benchmark-ready", `${number(gains.client_ready_speedup).toFixed(2)}×`);
+    text("benchmark-ready-detail", number(gains.client_ready_speedup) >= 1 ? "faster client readiness" : "slower client readiness");
+    text("benchmark-errors", integer(totalErrors));
+    text("benchmark-operations", `across ${integer(totalOperations)} measured operations`);
+
+    text("connections-direct", integer(direct.peak_database_connections));
+    text("connections-accelerated", integer(accelerated.peak_database_connections));
+    text("connections-outcome", `−${number(gains.connection_reduction_percent).toFixed(1)}% fewer`);
+    setPairBars("bar-connections-direct", "bar-connections-accelerated", direct.peak_database_connections, accelerated.peak_database_connections);
+
+    text("ready-direct", formatMilliseconds(direct.client_ready_ms));
+    text("ready-accelerated", formatMilliseconds(accelerated.client_ready_ms));
+    const readyChange = direct.client_ready_ms === 0 ? 0 : (direct.client_ready_ms - accelerated.client_ready_ms) / direct.client_ready_ms * 100;
+    setOutcome("ready-outcome", readyChange, "faster", "slower");
+    setPairBars("bar-ready-direct", "bar-ready-accelerated", direct.client_ready_ms, accelerated.client_ready_ms);
+
+    text("throughput-direct", formatRate(direct.throughput_per_second));
+    text("throughput-accelerated", formatRate(accelerated.throughput_per_second));
+    setOutcome("throughput-outcome", gains.throughput_change_percent);
+    setPairBars("bar-throughput-direct", "bar-throughput-accelerated", direct.throughput_per_second, accelerated.throughput_per_second);
+
+    text("p95-direct", formatMilliseconds(direct.p95_ms));
+    text("p95-accelerated", formatMilliseconds(accelerated.p95_ms));
+    setOutcome("p95-outcome", gains.p95_latency_change_percent);
+    setPairBars("bar-p95-direct", "bar-p95-accelerated", direct.p95_ms, accelerated.p95_ms);
+
+    text("benchmark-server", `${environment.server_product} ${environment.server_version}`);
+    text("benchmark-workload", `${integer(workload.open_clients)} clients / ${integer(workload.active_concurrency)} active`);
+    text("benchmark-dataset", `${integer(workload.dataset_rows)} rows / ${integer(workload.payload_bytes)} B payload`);
+    text("benchmark-query", workload.query_shape);
+    text("benchmark-completed", formatDate(report.completed_at));
+    text("benchmark-run-id", report.run_id);
+    text("benchmark-scope", report.evidence.scope);
+    text("benchmark-caveat", report.evidence.caveat);
+  };
+
   const render = (data) => {
     recordChanges(data);
     lastObserved = new Date(data.observed_at);
@@ -284,6 +367,7 @@
 
     renderDatabase(data.upstream);
     renderDecision(data);
+    renderBenchmark(data.benchmark);
     text("build-short", `v${data.build.version}`);
     text("build-version", data.build.version);
     text("build-commit", data.build.commit);
@@ -454,7 +538,7 @@
       document.querySelector(".rail").classList.remove("is-open");
       byId("mobile-menu").setAttribute("aria-expanded", "false");
     }
-    if (event.altKey && /^[1-4]$/.test(event.key)) { event.preventDefault(); setRoute(routes[number(event.key) - 1]); }
+    if (event.altKey && /^[1-5]$/.test(event.key)) { event.preventDefault(); setRoute(routes[number(event.key) - 1]); }
   });
   addEventListener("resize", drawChart);
 

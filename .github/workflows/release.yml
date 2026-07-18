@@ -1,0 +1,153 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "SemVer tag (example: v0.0.4-experimental.1)"
+        required: true
+        type: string
+      confidence:
+        description: "Release confidence; must agree with the tag"
+        required: true
+        default: experimental
+        type: choice
+        options:
+          - experimental
+          - preview
+          - stable
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.policy.outputs.tag }}
+      confidence: ${{ steps.policy.outputs.confidence }}
+      prerelease: ${{ steps.policy.outputs.prerelease }}
+      title_prefix: ${{ steps.policy.outputs.title_prefix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enforce confidence policy
+        id: policy
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          EXPECTED_CONFIDENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.confidence || '' }}
+        run: sh scripts/release-confidence.sh "$RELEASE_TAG" "$EXPECTED_CONFIDENCE"
+
+  build:
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            executable: accelerator.exe
+            archive: zip
+          - goos: linux
+            goarch: amd64
+            executable: accelerator
+            archive: tar
+          - goos: darwin
+            goarch: arm64
+            executable: accelerator
+            archive: tar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build release binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          VERSION: ${{ needs.policy.outputs.tag }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          export BUILD_DATE="$(git show -s --format=%cI "$GITHUB_SHA")"
+          export OUTPUT="stage/${{ matrix.executable }}"
+          sh scripts/build.sh
+      - name: Package archive
+        env:
+          TAG: ${{ needs.policy.outputs.tag }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          EXECUTABLE: ${{ matrix.executable }}
+          ARCHIVE: ${{ matrix.archive }}
+        run: |
+          mkdir -p release
+          base="database-accelerator-${TAG}-${GOOS}-${GOARCH}"
+          cp README.md LICENSE SECURITY.md stage/
+          if [ "$ARCHIVE" = "zip" ]; then
+            (cd stage && zip -9 "../release/${base}.zip" "$EXECUTABLE" README.md LICENSE SECURITY.md)
+          else
+            tar -C stage -czf "release/${base}.tar.gz" "$EXECUTABLE" README.md LICENSE SECURITY.md
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: [policy, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+      - name: Generate checksums and release notes
+        env:
+          TAG: ${{ needs.policy.outputs.tag }}
+          CONFIDENCE: ${{ needs.policy.outputs.confidence }}
+        run: |
+          (cd release && sha256sum * > SHA256SUMS.txt)
+          {
+            echo "## Database Accelerator ${TAG}"
+            echo
+            echo "Confidence: **${CONFIDENCE}**"
+            echo
+            if [ "$CONFIDENCE" = "experimental" ]; then
+              echo "> Experimental pre-alpha. Do not use with production or financial data. Compatibility and data-safety defects may exist."
+              echo
+            elif [ "$CONFIDENCE" = "preview" ]; then
+              echo "> Preview build. Validate compatibility, backups, rollback, and failure behavior before any serious use."
+              echo
+            fi
+            echo "Included targets: Windows amd64, Linux amd64, and macOS Darwin arm64. Verify downloads with \`SHA256SUMS.txt\`."
+            echo
+            echo "See the repository README, SECURITY.md, and release confidence policy before running the binary."
+          } > release-notes.md
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.policy.outputs.tag }}
+          PRERELEASE: ${{ needs.policy.outputs.prerelease }}
+          TITLE_PREFIX: ${{ needs.policy.outputs.title_prefix }}
+        run: |
+          prerelease=""
+          if [ "$PRERELEASE" = "true" ]; then prerelease="--prerelease"; fi
+          gh release create "$TAG" release/* \
+            --target "$GITHUB_SHA" \
+            --title "[${TITLE_PREFIX}] Database Accelerator ${TAG}" \
+            --notes-file release-notes.md \
+            $prerelease

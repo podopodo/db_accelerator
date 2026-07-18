@@ -25,6 +25,8 @@ func Handler() http.Handler {
 			contentType = "text/css; charset=utf-8"
 		case "app.js":
 			contentType = "application/javascript; charset=utf-8"
+		case "brand/logo-mark.svg", "brand/logo-lockup.svg":
+			contentType = "image/svg+xml; charset=utf-8"
 		case "fonts/BricolageGrotesque-Variable.ttf", "fonts/Lora-Variable.ttf", "fonts/IBMPlexMono-Regular.ttf", "fonts/IBMPlexMono-SemiBold.ttf":
 			contentType = "font/ttf"
 		default:

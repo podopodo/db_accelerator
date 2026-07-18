@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 160" role="img" aria-labelledby="title desc">
+  <title id="title">Database Accelerator</title>
+  <desc id="desc">Database Accelerator product lockup.</desc>
+  <rect width="720" height="160" rx="16" fill="#17131a"/>
+  <g transform="translate(16 16) scale(.8)">
+    <rect width="128" height="128" rx="14" fill="#17131a"/>
+    <path d="M23 28.5C23 21.6 34.2 16 48 16s25 5.6 25 12.5V82c0 6.9-11.2 12.5-25 12.5S23 88.9 23 82V28.5Z" fill="#221c25" stroke="#c988c3" stroke-width="5"/>
+    <ellipse cx="48" cy="28.5" rx="25" ry="12.5" fill="#17131a" stroke="#c988c3" stroke-width="5"/>
+    <path d="M23 53c0 6.9 11.2 12.5 25 12.5S73 59.9 73 53M23 76.5C23 83.4 34.2 89 48 89s25-5.6 25-12.5" fill="none" stroke="#80647d" stroke-width="4"/>
+    <path d="M65 48h24V34l24 30-24 30V80H65V48Z" fill="#4caf7b" stroke="#17131a" stroke-width="5" stroke-linejoin="round"/>
+    <path d="M83 55v18" stroke="#f5eee9" stroke-width="5"/>
+    <rect x="18" y="105" width="70" height="7" fill="#d6a92f"/><rect x="94" y="105" width="16" height="7" fill="#c988c3"/>
+  </g>
+  <text x="142" y="69" fill="#f5eee9" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="-1.5">Database</text>
+  <text x="142" y="112" fill="#c3b8c4" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="400" letter-spacing="-1.5">Accelerator</text>
+  <text x="550" y="48" fill="#d6a92f" font-family="Consolas, monospace" font-size="13" letter-spacing="1.5">EXPERIMENTAL</text>
+  <path d="M550 61h124" stroke="#3f3442"/>
+  <text x="550" y="82" fill="#8d818f" font-family="Consolas, monospace" font-size="11">ONE DATABASE</text>
+  <text x="550" y="101" fill="#8d818f" font-family="Consolas, monospace" font-size="11">MORE CLIENTS</text>
+</svg>

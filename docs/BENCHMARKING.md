@@ -1,73 +1,56 @@
-# Benchmark specification
+# Benchmarking
 
-## Purpose
+Database Accelerator includes a bounded comparison runner. It measures one configured MySQL/MariaDB server through two paths:
 
-Benchmarks prove connection fan-in and bounded overload. They do not manufacture throughput claims.
+1. Direct database connections.
+2. Logical clients sharing the accelerator's bounded upstream pool.
 
-## Required environment record
+It is evidence for connection efficiency. It is not a universal speed claim.
 
-Every result stores:
+## Safety boundary
 
-- Accelerator version and commit.
-- Direct or accelerator path.
-- Server product, exact version, configuration digest, and connection cap.
-- Client driver and exact version.
-- Operating system, kernel, CPU model/count, RAM, disk, and network topology.
-- Dataset seed, row count, approximate bytes, and schema digest.
-- Workload name, duration, warmup, client count, active concurrency, and random seed.
-- Latency distribution, throughput, errors, timeouts, connections, CPU, RSS, and database metrics.
+The runner:
 
-Results from different undocumented environments are not compared.
+- Requires an enabled upstream and credentials with `CREATE DATABASE` and `DROP DATABASE` privileges.
+- Creates one random database named `dba_benchmark_<8 hex characters>`.
+- Creates and fills one InnoDB table inside it.
+- Runs bounded primary-key point reads with no accelerator cache.
+- Removes the isolated database before returning, including most failure paths.
+- Rejects more than 256 clients, 32 active workers, 100,000 operations, or 10,000 rows.
 
-## V0.0.1 profiles
+Do not run it on a production server during traffic. Database benchmarks consume connections, CPU, memory, and I/O.
 
-### Idle fan-in
+## Run
 
-- Open connections in steps.
-- Keep connections idle except one ping every 30 seconds.
-- Record database memory and accepted connection limit.
-- Direct baseline ends at server cap or first stable failure threshold.
+```text
+accelerator benchmark --config accelerator.yaml \
+  --clients 64 \
+  --concurrency 8 \
+  --operations 3000 \
+  --rows 5000
+```
 
-### Short autocommit
+The default output is `<data_dir>/benchmark-latest.json`. The admin API reads this file. The Performance view updates from it automatically.
 
-- 90% primary-key reads.
-- 10% single-row counter updates.
-- Short think time.
-- Record active concurrency separately from open clients.
+## Read the result
 
-### Mixed workload
+- `connection_reduction_percent`, `connections_saved`, and `fan_in_ratio` are the primary product evidence.
+- `client_ready_speedup` measures how long all logical clients took to become ready.
+- `throughput_change_percent` and `p95_latency_change_percent` may be negative. Negative values are retained and shown.
+- The scope statement binds the result to one machine, server, binary, and workload.
 
-- Point reads, indexed range reads, inserts with explicit IDs, and single-row updates.
-- Fixed operation distribution and deterministic seed.
+Very short local reads can fall below the operating system timer resolution. The UI displays a recorded zero latency as `<0.001 ms`; it does not invent extra precision.
 
-### Transaction workload
+## Recorded competition run
 
-- Two-row account transfer under one transaction.
-- Conservation invariant checked before and after.
-- No automatic retry in baseline.
+The repository includes the raw [MariaDB 11.7.2 Windows amd64 report](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json).
 
-### Spike workload
+- 64 logical clients.
+- 8 active workers.
+- 3,000 point reads per path; direct path measured twice.
+- 64 direct database connections versus 8 through the accelerator.
+- 87.5% fewer physical connections and 8.0x fan-in.
+- Zero errors across 9,000 measured operations.
+- Direct reads were faster: the accelerator recorded 82.45% lower throughput and 40.07% worse p95 latency in this local microbenchmark.
 
-- Ramp from steady state to configured logical-client target in ten seconds.
-- Hold, recover, and repeat.
-- Record queue delay, errors, and recovery time.
-
-## Comparison rules
-
-- Run direct baseline twice before proxy comparison.
-- Use median of stable runs and retain every raw result.
-- Report p50, p95, p99, and maximum. Do not report average alone.
-- Separate connection establishment, scheduler wait, database time, and response time.
-- A correctness mismatch invalidates the performance result.
-
-## V0.0.1 fixture
-
-`internal/testkit` generates a database name with the reserved `dba_test_` prefix and a unique ownership marker. Later database cleanup code must verify both before it may issue `DROP DATABASE`.
-
-Workload declaration: `bench/workloads/v0.0.1.yaml`.
-
-Result contract: `bench/result.schema.json`.
-
-## Current baseline status
-
-The environment and workload contracts are ready. Direct server numbers remain intentionally unfilled until the pinned MySQL and MariaDB servers are available. No placeholder number is accepted as evidence.
+That result supports connection consolidation. It does not support a query-throughput claim.

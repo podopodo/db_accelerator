@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/podopodo/db_accelerator/internal/benchmark"
 	"github.com/podopodo/db_accelerator/internal/buildinfo"
 	"github.com/podopodo/db_accelerator/internal/config"
 	"github.com/podopodo/db_accelerator/internal/lifecycle"
@@ -44,6 +46,7 @@ type StatusResponse struct {
 	Pressure     PressureStatus     `json:"pressure"`
 	Limits       LimitsStatus       `json:"limits"`
 	Acceleration AccelerationStatus `json:"acceleration"`
+	Benchmark    benchmark.Status   `json:"benchmark"`
 }
 
 type UpstreamStatus struct {
@@ -218,6 +221,7 @@ func (r *Runtime) Snapshot() StatusResponse {
 			QueuedBytes:         r.config.Limits.MaxQueuedBytes,
 		},
 		Acceleration: accelerationStatus(relaySnapshot.Mode),
+		Benchmark:    benchmark.LoadStatus(filepath.Join(r.config.Server.DataDir, "benchmark-latest.json")),
 	}
 }
 

@@ -9,12 +9,16 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/podopodo/db_accelerator/internal/app"
+	"github.com/podopodo/db_accelerator/internal/benchmark"
 	"github.com/podopodo/db_accelerator/internal/buildinfo"
 	"github.com/podopodo/db_accelerator/internal/config"
 	"github.com/podopodo/db_accelerator/internal/upstream"
@@ -27,6 +31,8 @@ Usage:
   accelerator config init [options]
   accelerator config validate [options]
   accelerator doctor [options]
+  accelerator benchmark [options]
+  accelerator healthcheck [options]
   accelerator serve [options]
 `
 
@@ -48,12 +54,96 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runConfig(args[1:], stdout, stderr)
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "benchmark":
+		return runBenchmark(args[1:], stdout, stderr)
+	case "healthcheck":
+		return runHealthcheck(args[1:], stdout, stderr)
 	case "serve":
 		return runServe(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
+}
+
+func runBenchmark(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("benchmark", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "accelerator.yaml", "base configuration path")
+	managed := flags.String("managed-config", "accelerator.managed.yaml", "managed overlay path")
+	clients := flags.Int("clients", 64, "logical clients used for connection comparison")
+	concurrency := flags.Int("concurrency", 8, "active point-read workers and upstream pool cap")
+	operations := flags.Int("operations", 2000, "point reads per measured path")
+	rows := flags.Int("rows", 5000, "isolated benchmark rows")
+	output := flags.String("output", "", "benchmark evidence JSON path")
+	timeout := flags.Duration("timeout", 2*time.Minute, "whole benchmark deadline")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	cfg, err := config.Load(config.LoadOptions{Path: *path, ManagedPath: *managed})
+	if err != nil {
+		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
+		return 1
+	}
+	secrets, err := config.ResolveEnvironmentSecrets(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "configuration secret invalid: %v\n", err)
+		return 1
+	}
+	outputPath := *output
+	if outputPath == "" {
+		outputPath = filepath.Join(cfg.Server.DataDir, "benchmark-latest.json")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	report, err := benchmark.Run(ctx, benchmark.Options{
+		Config:      cfg,
+		Secrets:     secrets,
+		Clients:     *clients,
+		Concurrency: *concurrency,
+		Operations:  *operations,
+		Rows:        *rows,
+		OutputPath:  outputPath,
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "benchmark failed: %v\n", err)
+		return 1
+	}
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(report); err != nil {
+		fmt.Fprintf(stderr, "encode benchmark report: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runHealthcheck(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	url := flags.String("url", "http://127.0.0.1:9090/readyz", "readiness endpoint")
+	timeout := flags.Duration("timeout", 3*time.Second, "request timeout")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	client := &http.Client{Timeout: *timeout}
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, *url, nil)
+	if err != nil {
+		fmt.Fprintf(stderr, "healthcheck: %v\n", err)
+		return 2
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		fmt.Fprintf(stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		fmt.Fprintf(stderr, "healthcheck: HTTP %d\n", response.StatusCode)
+		return 1
+	}
+	fmt.Fprintln(stdout, "ready")
+	return 0
 }
 
 func runDoctor(args []string, stdout, stderr io.Writer) int {
@@ -69,7 +159,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
 		return 1
 	}
-	secrets, err := config.ResolveSecrets(cfg, os.LookupEnv)
+	secrets, err := config.ResolveEnvironmentSecrets(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration secret invalid: %v\n", err)
 		return 1
@@ -126,7 +216,7 @@ func runConfig(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
 			return 1
 		}
-		if _, err := config.ResolveSecrets(cfg, os.LookupEnv); err != nil {
+		if _, err := config.ResolveEnvironmentSecrets(cfg); err != nil {
 			fmt.Fprintf(stderr, "configuration secret invalid: %v\n", err)
 			return 1
 		}
@@ -174,7 +264,7 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
 		return 1
 	}
-	secrets, err := config.ResolveSecrets(cfg, os.LookupEnv)
+	secrets, err := config.ResolveEnvironmentSecrets(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "configuration secret invalid: %v\n", err)
 		return 1
