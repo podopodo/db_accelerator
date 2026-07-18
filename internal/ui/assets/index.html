@@ -12,6 +12,42 @@
 <body>
   <a class="skip-link" href="#main-content">Skip to operations</a>
 
+  <section class="auth-gate" id="auth-gate" aria-labelledby="auth-title" aria-describedby="auth-description">
+    <div class="auth-frame">
+      <div class="auth-context" aria-hidden="true">
+        <div class="auth-brand"><span>DA</span><strong>Database<br>Accelerator</strong></div>
+        <div class="auth-statement">
+          <p>CONTROL PLANE / LOCAL</p>
+          <strong>Operational truth stays behind one deliberate gate.</strong>
+          <span>Credentials, connection pressure, and database health remain visible only to the operator holding the configured admin token.</span>
+        </div>
+        <dl>
+          <div><dt>Scope</dt><dd>Single upstream</dd></div>
+          <div><dt>Session</dt><dd>8 hour maximum</dd></div>
+          <div><dt>Storage</dt><dd>HTTP-only cookie</dd></div>
+        </dl>
+      </div>
+      <div class="auth-panel">
+        <div class="auth-loading" id="auth-loading">
+          <span class="auth-pulse" aria-hidden="true"></span>
+          <p>Checking operator session</p>
+        </div>
+        <form id="auth-form" hidden>
+          <p class="kicker">Operator access</p>
+          <h1 id="auth-title">Unlock console</h1>
+          <p id="auth-description">Enter the token referenced by <code>server.admin_token_env</code>. The token stays in this request and is never stored by the browser.</p>
+          <label for="admin-token">Admin token</label>
+          <div class="auth-input-row">
+            <input id="admin-token" name="token" type="password" autocomplete="current-password" spellcheck="false" required>
+            <button type="submit" id="auth-submit">Continue</button>
+          </div>
+          <p class="auth-error" id="auth-error" role="alert" hidden></p>
+          <div class="auth-footnote"><span>LOCAL SESSION</span><span>RATE LIMITED</span><span>NO TOKEN STORAGE</span></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
   <div class="app-shell">
     <aside class="rail" aria-label="Primary navigation">
       <div class="brand-lockup">
@@ -71,6 +107,7 @@
           <span class="last-update"><span id="observed-age">—</span><small>last sample</small></span>
           <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh metrics now">Refresh</button>
           <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch color theme">Light</button>
+          <button class="icon-button" id="sign-out" type="button" hidden>Sign out</button>
         </div>
       </header>
 
@@ -111,11 +148,11 @@
                 </div>
                 <div class="topology-link"><span></span><small>admit</small></div>
                 <div class="topology-node node-gateway">
-                  <span class="node-code">RELAY</span>
+                  <span class="node-code" id="gateway-node-code">RELAY</span>
                   <strong id="active-pool">0</strong>
-                  <small>direct links</small>
+                  <small id="gateway-node-detail">direct links</small>
                 </div>
-                <div class="topology-link"><span></span><small>forward</small></div>
+                <div class="topology-link"><span></span><small id="gateway-link-action">forward</small></div>
                 <div class="topology-node node-database">
                   <span class="node-code">UPSTREAM</span>
                   <strong id="database-links">0</strong>
@@ -156,7 +193,7 @@
               <dl class="decision-facts">
                 <div><dt>Waiting</dt><dd id="waiting-work">0</dd></div>
                 <div><dt>Rejected</dt><dd id="rejected-total">0</dd></div>
-                <div><dt>Relay errors</dt><dd id="relay-errors">0</dd></div>
+                <div><dt id="gateway-error-label">Relay errors</dt><dd id="relay-errors">0</dd></div>
                 <div><dt>Probe latency</dt><dd id="upstream-latency">—</dd></div>
               </dl>
               <div class="truth-note">
@@ -210,12 +247,12 @@
           </header>
 
           <section class="relation-panel" aria-labelledby="relation-title">
-            <header class="section-bar"><div><p class="section-index">Physical relationship</p><h2 id="relation-title">One client. One upstream link.</h2></div><span class="mode-chip">compatibility mode</span></header>
+            <header class="section-bar"><div><p class="section-index">Physical relationship</p><h2 id="relation-title">One client. One upstream link.</h2></div><span class="mode-chip" id="connection-mode-chip">compatibility mode</span></header>
             <div class="relation-diagram">
               <div><span>Logical clients</span><strong id="connections-clients">0</strong></div>
-              <span class="relation-equals" aria-hidden="true">=</span>
+              <span class="relation-equals" id="relation-symbol" aria-hidden="true">=</span>
               <div><span>Database links</span><strong id="connections-links">0</strong></div>
-              <p>Connection reduction is disabled in this build. The safety limit still prevents an unbounded client spike from reaching MariaDB.</p>
+              <p id="relation-copy">Connection reduction is disabled in this build. The safety limit still prevents an unbounded client spike from reaching MariaDB.</p>
             </div>
           </section>
 
@@ -227,17 +264,17 @@
                 <thead><tr><th>Boundary</th><th>Configured</th><th>Observed</th><th>Behavior</th></tr></thead>
                 <tbody>
                   <tr><td>Logical clients</td><td id="limit-logical">—</td><td id="observed-logical">0</td><td>Listener admission</td></tr>
-                  <tr><td>Upstream links</td><td id="limit-upstream">—</td><td id="observed-upstream">0</td><td>Hard rejection at limit</td></tr>
-                  <tr><td>Queued requests</td><td id="limit-queued">—</td><td>0</td><td>Not active in relay mode</td></tr>
-                  <tr><td>Queued bytes</td><td id="limit-bytes">—</td><td>0 B</td><td>Not active in relay mode</td></tr>
+                  <tr><td>Upstream links</td><td id="limit-upstream">—</td><td id="observed-upstream">0</td><td id="upstream-limit-behavior">Hard rejection at limit</td></tr>
+                  <tr><td>Queued requests</td><td id="limit-queued">—</td><td id="observed-queued">0</td><td id="queue-limit-behavior">Not active in relay mode</td></tr>
+                  <tr><td>Queued bytes</td><td id="limit-bytes">—</td><td>0 B</td><td>Not enforced in this build</td></tr>
                 </tbody>
               </table>
             </section>
 
             <aside class="capability-panel">
               <span class="capability-label">Session inventory</span>
-              <h2>Not exposed by the transparent relay.</h2>
-              <p>The relay forwards encrypted or plaintext wire bytes without parsing client identity, transaction state, or query text.</p>
+              <h2>Session inventory is not exposed yet.</h2>
+              <p id="session-inventory-copy">The compatibility relay forwards wire bytes without parsing client identity, transaction state, or query text.</p>
               <ul class="plain-list"><li><span>Available</span>aggregate connection counts</li><li><span>Locked</span>session and transaction detail</li><li><span>Locked</span>query fingerprints</li></ul>
             </aside>
           </div>
@@ -293,10 +330,10 @@
             <section class="capability-ledger" aria-labelledby="ledger-title">
               <header class="section-bar"><div><p class="section-index">Capability ledger</p><h2 id="ledger-title">What this process can do</h2></div></header>
               <ul>
-                <li><span class="gate-state pass">Live</span><div><strong>Native wire relay</strong><small>Byte-for-byte MySQL/MariaDB traffic forwarding.</small></div></li>
+                <li><span class="gate-state pass">Live</span><div><strong id="wire-capability-title">Native wire relay</strong><small id="wire-capability-detail">Byte-for-byte MySQL/MariaDB traffic forwarding.</small></div></li>
                 <li><span class="gate-state pass">Live</span><div><strong>Bounded admission</strong><small>New clients rejected when the upstream safety limit is full.</small></div></li>
                 <li><span class="gate-state pass">Live</span><div><strong>Upstream diagnostics</strong><small>Server identity, defaults, and latency probe.</small></div></li>
-                <li><span class="gate-state lock">Locked</span><div><strong>Connection pooling</strong><small>Requires protocol-aware session reset and pinning.</small></div></li>
+                <li><span class="gate-state lock" id="pooling-gate-state">Locked</span><div><strong>Connection pooling</strong><small id="pooling-gate-detail">Requires protocol-aware session reset and pinning.</small></div></li>
                 <li><span class="gate-state lock">Locked</span><div><strong>Read acceleration</strong><small>Requires schema catalog and safe invalidation.</small></div></li>
                 <li><span class="gate-state lock">Locked</span><div><strong>Atomic extensions</strong><small>Requires durable journal and independent correctness audit.</small></div></li>
               </ul>

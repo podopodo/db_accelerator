@@ -133,7 +133,7 @@ func TestParseRejectsUnsupportedCompression(t *testing.T) {
 
 func TestParseRejectsUnknownCapability(t *testing.T) {
 	handshake, _ := NewHandshake(DefaultHandshakeConfig(1))
-	payload := buildHandshakeResponse(DefaultServerCapabilities|Capability(1<<31), 45, "user", nil, "", DefaultAuthPlugin, nil)
+	payload := buildHandshakeResponse(DefaultServerCapabilities|Capability(1<<30), 45, "user", nil, "", DefaultAuthPlugin, nil)
 	_, err := handshake.ParseResponse(payload)
 	if !errors.Is(err, ErrUnsupportedCapability) {
 		t.Fatalf("error = %v", err)

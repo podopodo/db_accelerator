@@ -35,6 +35,12 @@ Patch targets are refreshed before each release candidate. A new patch is not su
 
 Exact driver versions are frozen in V0.0.2 after handshake fixtures exist.
 
+## Current experimental evidence
+
+The competition build has one locally proven pooled lane: MariaDB 11.7.2 with the native MariaDB command-line client and `github.com/go-sql-driver/mysql` v1.9.3. Tests cover conservative text queries, DDL, inserts, result rows, affected rows, insert IDs, commit, rollback, and 64 logical clients sharing one physical connection under a small autocommit workload.
+
+This lane remains `experimental`, not `supported`, because the full differential, reconnect, datatype, cancellation, authentication, TLS, and workload gates have not passed. Binary prepared statements and client TLS are currently unsupported in pooled mode. Transparent mode remains available as a one-client/one-upstream compatibility fallback.
+
 ## Operating-system matrix
 
 - Linux amd64: primary production build and test target.

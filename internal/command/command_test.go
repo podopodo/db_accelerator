@@ -20,6 +20,7 @@ func TestRunVersion(t *testing.T) {
 }
 
 func TestConfigInitAndValidate(t *testing.T) {
+	t.Setenv("DBA_ADMIN_TOKEN", "test-admin-token-12345")
 	path := filepath.Join(t.TempDir(), "accelerator.yaml")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -49,6 +50,7 @@ func TestRunUnknownCommand(t *testing.T) {
 }
 
 func TestDoctorReportsDisabledUpstream(t *testing.T) {
+	t.Setenv("DBA_ADMIN_TOKEN", "test-admin-token-12345")
 	path := filepath.Join(t.TempDir(), "accelerator.yaml")
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

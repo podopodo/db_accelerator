@@ -71,6 +71,8 @@ func (s *Server) ActiveConnections() int64 { return s.active.Load() }
 
 func (s *Server) RejectedConnections() uint64 { return s.rejected.Load() }
 
+func (s *Server) AcceptedConnections() uint64 { return s.nextID.Load() }
+
 // Serve accepts connections from an already-bound listener. The caller owns
 // address selection; Serve owns listener closure after context cancellation.
 func (s *Server) Serve(ctx context.Context, listener net.Listener) error {

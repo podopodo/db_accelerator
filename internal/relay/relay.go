@@ -21,17 +21,21 @@ type Config struct {
 }
 
 type Snapshot struct {
-	Mode             string `json:"mode"`
-	ListenAddress    string `json:"listen_address"`
-	UpstreamAddress  string `json:"upstream_address"`
-	Active           int64  `json:"active"`
-	AcceptedTotal    uint64 `json:"accepted_total"`
-	RejectedTotal    uint64 `json:"rejected_total"`
-	DialErrorsTotal  uint64 `json:"dial_errors_total"`
-	RelayErrorsTotal uint64 `json:"relay_errors_total"`
-	ClientToDBBytes  uint64 `json:"client_to_db_bytes"`
-	DBToClientBytes  uint64 `json:"db_to_client_bytes"`
-	MaxConnections   int    `json:"max_connections"`
+	Mode              string `json:"mode"`
+	ListenAddress     string `json:"listen_address"`
+	UpstreamAddress   string `json:"upstream_address"`
+	Active            int64  `json:"active"`
+	DatabaseLinks     int64  `json:"database_links"`
+	IdleDatabaseLinks int64  `json:"idle_database_links"`
+	WaitingWork       int64  `json:"waiting_work"`
+	PinnedWork        int64  `json:"pinned_work"`
+	AcceptedTotal     uint64 `json:"accepted_total"`
+	RejectedTotal     uint64 `json:"rejected_total"`
+	DialErrorsTotal   uint64 `json:"dial_errors_total"`
+	RelayErrorsTotal  uint64 `json:"relay_errors_total"`
+	ClientToDBBytes   uint64 `json:"client_to_db_bytes"`
+	DBToClientBytes   uint64 `json:"db_to_client_bytes"`
+	MaxConnections    int    `json:"max_connections"`
 }
 
 // Server preserves the upstream wire protocol byte-for-byte. It deliberately
@@ -253,6 +257,7 @@ func (s *Server) Snapshot() Snapshot {
 		ListenAddress:    s.Address(),
 		UpstreamAddress:  s.config.UpstreamAddress,
 		Active:           s.active.Load(),
+		DatabaseLinks:    s.active.Load(),
 		AcceptedTotal:    s.accepted.Load(),
 		RejectedTotal:    s.rejected.Load(),
 		DialErrorsTotal:  s.dialErrors.Load(),

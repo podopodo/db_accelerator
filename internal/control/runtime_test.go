@@ -12,6 +12,7 @@ import (
 	"github.com/podopodo/db_accelerator/internal/buildinfo"
 	"github.com/podopodo/db_accelerator/internal/config"
 	"github.com/podopodo/db_accelerator/internal/lifecycle"
+	"github.com/podopodo/db_accelerator/internal/relay"
 )
 
 func TestRuntimeSnapshotTellsTransparentRelayTruth(t *testing.T) {
@@ -29,12 +30,32 @@ func TestRuntimeSnapshotTellsTransparentRelayTruth(t *testing.T) {
 	}
 }
 
+type fixedRelay struct{ snapshot relay.Snapshot }
+
+func (f fixedRelay) Snapshot() relay.Snapshot { return f.snapshot }
+
+func TestRuntimeMapsPooledPressureAndCapability(t *testing.T) {
+	cfg := config.Default()
+	cfg.Server.MySQLMode = "pooled"
+	cfg.Limits.MaxUpstreamConnections = 10
+	state := lifecycle.New(time.Now())
+	runtime := NewRuntime(state, cfg, fixedRelay{snapshot: relay.Snapshot{
+		Mode: "protocol-pooled", Active: 50, DatabaseLinks: 4, WaitingWork: 2, PinnedWork: 1, MaxConnections: 10,
+	}}, nil, time.Now())
+	runtime.probe(context.Background())
+
+	snapshot := runtime.Snapshot()
+	if !snapshot.Acceleration.Enabled || snapshot.Pressure.Percent != 40 || snapshot.Pressure.LogicalClients != 50 || snapshot.Pressure.DatabaseLinks != 4 || snapshot.Pressure.WaitingWork != 2 || snapshot.Pressure.PinnedWork != 1 {
+		t.Fatalf("pooled runtime mapping: %+v", snapshot)
+	}
+}
+
 func TestAppHandlerServesStatusAndSecurityHeaders(t *testing.T) {
 	cfg := config.Default()
 	state := lifecycle.New(time.Now())
 	runtime := NewRuntime(state, cfg, nil, nil, time.Now())
 	runtime.probe(context.Background())
-	handler := AppHandler(state, buildinfo.Current(), runtime)
+	handler := AppHandler(state, buildinfo.Current(), runtime, "")
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/status", nil)
 	response := httptest.NewRecorder()

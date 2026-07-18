@@ -23,6 +23,7 @@ const (
 	ClientSessionTrack               Capability = 1 << 23
 	ClientDeprecateEOF               Capability = 1 << 24
 	ClientZstdCompressionAlgorithm   Capability = 1 << 26
+	ClientRememberOptions            Capability = 1 << 31
 )
 
 const DefaultServerCapabilities = ClientLongPassword |

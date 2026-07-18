@@ -36,24 +36,29 @@ func HealthHandler(state *lifecycle.Manager, info buildinfo.Info) http.Handler {
 	return securityHeaders(mux)
 }
 
-// AppHandler serves the embedded operations cockpit and versioned read-only
-// demo API. Authentication remains a later gate; callers must bind locally.
-func AppHandler(state *lifecycle.Manager, info buildinfo.Info, runtime *Runtime) http.Handler {
+// AppHandler serves the embedded operations cockpit and versioned read-only API.
+// When adminToken is set, operational API routes require an authenticated,
+// HTTP-only same-site session cookie.
+func AppHandler(state *lifecycle.Manager, info buildinfo.Info, runtime *Runtime, adminToken string) http.Handler {
 	mux := http.NewServeMux()
+	auth := newAdminAuth(adminToken)
 	health := HealthHandler(state, info)
 	mux.Handle("/livez", health)
 	mux.Handle("/readyz", health)
 	mux.Handle("/api/v1/version", health)
-	mux.HandleFunc("GET /api/v1/status", func(w http.ResponseWriter, _ *http.Request) {
+	mux.Handle("GET /api/v1/session", auth.sessionStatus())
+	mux.Handle("POST /api/v1/session", auth.login())
+	mux.Handle("DELETE /api/v1/session", auth.logout())
+	mux.Handle("GET /api/v1/status", auth.require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, runtime.Snapshot())
-	})
-	mux.HandleFunc("GET /api/v1/upstream", func(w http.ResponseWriter, _ *http.Request) {
+	})))
+	mux.Handle("GET /api/v1/upstream", auth.require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, runtime.Snapshot().Upstream)
-	})
-	mux.HandleFunc("GET /api/v1/relay", func(w http.ResponseWriter, _ *http.Request) {
+	})))
+	mux.Handle("GET /api/v1/relay", auth.require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, runtime.Snapshot().Relay)
-	})
-	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, _ *http.Request) {
+	})))
+	mux.Handle("GET /api/v1/config", auth.require(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		snapshot := runtime.Snapshot()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"limits": snapshot.Limits,
@@ -64,7 +69,7 @@ func AppHandler(state *lifecycle.Manager, info buildinfo.Info, runtime *Runtime)
 			},
 			"read_only": true,
 		})
-	})
+	})))
 	mux.Handle("/", ui.Handler())
 	return securityHeaders(mux)
 }
@@ -74,6 +79,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		w.Header().Set("X-Request-ID", fmt.Sprintf("r-%x-%x", time.Now().UnixMilli(), requestSequence.Add(1)))

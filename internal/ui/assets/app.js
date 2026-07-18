@@ -14,6 +14,7 @@
   let lastObserved = null;
   let request = null;
   let toastTimer = null;
+  let authenticationRequired = false;
 
   const formatBytes = (value) => {
     let bytes = number(value);
@@ -228,6 +229,29 @@
     text("diag-upstream-address", data.relay.upstream_address);
     text("relay-mode", data.relay.mode.replaceAll("-", " "));
 
+    const pooled = data.relay.mode === "protocol-pooled";
+    text("gateway-node-code", pooled ? "POOL" : "RELAY");
+    text("gateway-node-detail", pooled ? "pool connections" : "direct links");
+    text("gateway-link-action", pooled ? "execute" : "forward");
+    text("gateway-error-label", pooled ? "Query errors" : "Relay errors");
+    text("relation-title", pooled ? "Logical clients share a bounded upstream pool." : "One client. One upstream link.");
+    text("connection-mode-chip", pooled ? "pooled mode" : "compatibility mode");
+    text("relation-symbol", pooled ? "→" : "=");
+    text("relation-copy", pooled
+      ? "Idle clients hold no database socket. Safe autocommit text queries borrow a connection; transactions keep one pinned until commit or rollback."
+      : "Connection reduction is disabled in this build. The safety limit still prevents an unbounded client spike from reaching MariaDB.");
+    text("wire-capability-title", pooled ? "Text protocol gateway" : "Native wire relay");
+    text("wire-capability-detail", pooled ? "Authenticated text queries execute through the bounded upstream pool." : "Byte-for-byte MySQL/MariaDB traffic forwarding.");
+    const poolingGate = byId("pooling-gate-state");
+    poolingGate.className = `gate-state ${pooled ? "pass" : "lock"}`;
+    poolingGate.textContent = pooled ? "Live" : "Locked";
+    text("pooling-gate-detail", pooled ? "Autocommit text queries reuse connections; transactions remain pinned." : "Requires protocol-aware session reset and pinning.");
+    text("session-inventory-copy", pooled
+      ? "Pooled mode tracks aggregate clients, waits, and pinned transactions without retaining query text or exposing client identity."
+      : "The compatibility relay forwards wire bytes without parsing client identity, transaction state, or query text.");
+    text("upstream-limit-behavior", pooled ? "Queries wait at the pool boundary" : "Hard rejection at limit");
+    text("queue-limit-behavior", pooled ? "Request count and queued SQL bytes are hard bounded" : "Not active in relay mode");
+
     text("logical-clients", integer(data.pressure.logical_clients));
     text("active-pool", integer(data.pressure.active_pool));
     text("database-links", integer(data.pressure.database_links));
@@ -256,6 +280,7 @@
     text("limit-bytes", formatBytes(data.limits.queued_bytes));
     text("observed-logical", integer(data.pressure.logical_clients));
     text("observed-upstream", integer(data.pressure.database_links));
+    text("observed-queued", integer(data.pressure.waiting_work));
 
     renderDatabase(data.upstream);
     renderDecision(data);
@@ -285,6 +310,10 @@
     if (manual) { button.classList.add("is-busy"); button.textContent = "Loading"; }
     try {
       const response = await fetch("/api/v1/status", { cache: "no-store", signal: request.signal });
+      if (response.status === 401) {
+        showAuthentication();
+        return;
+      }
       if (!response.ok) throw new Error(`status ${response.status}`);
       render(await response.json());
       if (manual) showToast("Live metrics refreshed");
@@ -296,6 +325,44 @@
     } finally {
       request = null;
       if (manual) { button.classList.remove("is-busy"); button.textContent = "Refresh"; }
+    }
+  };
+
+  const showAuthentication = (message = "") => {
+    const gate = byId("auth-gate");
+    document.body.classList.add("auth-locked");
+    gate.hidden = false;
+    byId("auth-loading").hidden = true;
+    byId("auth-form").hidden = false;
+    const error = byId("auth-error");
+    error.textContent = message;
+    error.hidden = !message;
+    byId("sign-out").hidden = true;
+    setTimeout(() => byId("admin-token").focus(), 0);
+  };
+
+  const hideAuthentication = () => {
+    document.body.classList.remove("auth-locked");
+    byId("auth-gate").hidden = true;
+    byId("auth-error").hidden = true;
+    byId("admin-token").value = "";
+    byId("sign-out").hidden = !authenticationRequired;
+  };
+
+  const checkAuthentication = async () => {
+    try {
+      const response = await fetch("/api/v1/session", { cache: "no-store" });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      const session = await response.json();
+      authenticationRequired = Boolean(session.required);
+      if (session.authenticated) {
+        hideAuthentication();
+        await refresh();
+      } else {
+        showAuthentication();
+      }
+    } catch (_) {
+      showAuthentication("The local control plane did not answer. Check that the accelerator is running, then try again.");
     }
   };
 
@@ -335,6 +402,37 @@
   all("[data-route-jump]").forEach((button) => button.addEventListener("click", () => setRoute(button.dataset.routeJump)));
   addEventListener("hashchange", () => setRoute(location.hash.slice(1), false));
   byId("refresh-button").addEventListener("click", () => refresh(true));
+  byId("auth-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const submit = byId("auth-submit");
+    const error = byId("auth-error");
+    submit.disabled = true;
+    submit.textContent = "Checking";
+    error.hidden = true;
+    try {
+      const response = await fetch("/api/v1/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: byId("admin-token").value }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `Login failed (${response.status})`);
+      hideAuthentication();
+      addActivity("Operator session opened", "admin control plane authenticated");
+      await refresh();
+    } catch (loginError) {
+      showAuthentication(loginError.message || "Login failed");
+      byId("admin-token").select();
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Continue";
+    }
+  });
+  byId("sign-out").addEventListener("click", async () => {
+    await fetch("/api/v1/session", { method: "DELETE" }).catch(() => {});
+    previous = null;
+    showAuthentication();
+  });
   byId("theme-toggle").addEventListener("click", () => {
     const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     applyTheme(next);
@@ -361,7 +459,7 @@
   addEventListener("resize", drawChart);
 
   setRoute(location.hash.slice(1), false);
-  refresh();
-  setInterval(refresh, 2000);
+  checkAuthentication();
+  setInterval(() => { if (byId("auth-gate").hidden) refresh(); }, 2000);
   setInterval(updateAge, 1000);
 })();

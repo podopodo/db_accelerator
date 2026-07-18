@@ -175,14 +175,25 @@ func verifyCertificateChain(roots *x509.CertPool) func(tls.ConnectionState) erro
 // Open returns a one-connection database handle. Ping is performed by Probe,
 // where one physical connection is retained for every metadata query.
 func (c *Connector) Open() (*sql.DB, error) {
+	return c.OpenPool(1)
+}
+
+// OpenPool returns a bounded database/sql pool for the protocol-aware gateway.
+// Session-changing SQL must never be returned to this shared pool without a
+// verified reset; the gateway therefore accepts only its safe statement set.
+func (c *Connector) OpenPool(maxOpen int) (*sql.DB, error) {
+	if maxOpen <= 0 {
+		return nil, &Error{Kind: KindConfiguration, Operation: "configure pool", Err: errors.New("max open connections must be positive")}
+	}
 	connector, err := driver.NewConnector(c.driverConfig.Clone())
 	if err != nil {
 		return nil, classify("create connector", err)
 	}
 	database := sql.OpenDB(connector)
-	database.SetMaxOpenConns(1)
-	database.SetMaxIdleConns(1)
+	database.SetMaxOpenConns(maxOpen)
+	database.SetMaxIdleConns(maxOpen)
 	database.SetConnMaxIdleTime(30 * time.Second)
+	database.SetConnMaxLifetime(30 * time.Minute)
 	return database, nil
 }
 

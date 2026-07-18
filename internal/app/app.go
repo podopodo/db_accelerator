@@ -15,6 +15,7 @@ import (
 	"github.com/podopodo/db_accelerator/internal/buildinfo"
 	"github.com/podopodo/db_accelerator/internal/config"
 	"github.com/podopodo/db_accelerator/internal/control"
+	"github.com/podopodo/db_accelerator/internal/gateway"
 	"github.com/podopodo/db_accelerator/internal/lifecycle"
 	"github.com/podopodo/db_accelerator/internal/relay"
 	"github.com/podopodo/db_accelerator/internal/upstream"
@@ -29,6 +30,13 @@ type App struct {
 	readyOnce sync.Once
 	mu        sync.RWMutex
 	adminAddr string
+}
+
+type mysqlService interface {
+	Start(context.Context) error
+	Shutdown(context.Context) error
+	Address() string
+	Snapshot() relay.Snapshot
 }
 
 func New(cfg config.Config, secrets config.Secrets, logger *slog.Logger) *App {
@@ -61,7 +69,7 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 
-	var relayServer *relay.Server
+	var trafficService mysqlService
 	var connector *upstream.Connector
 	var err error
 	if a.cfg.Upstream.Enabled {
@@ -75,17 +83,21 @@ func (a *App) Run(ctx context.Context) error {
 			_ = a.state.Transition(lifecycle.Failed, "configure upstream", time.Now())
 			return err
 		}
-		relayServer, err = relay.New(relay.Config{
-			ListenAddress:   a.cfg.Server.MySQLListen,
-			UpstreamAddress: net.JoinHostPort(a.cfg.Upstream.Host, strconv.Itoa(a.cfg.Upstream.Port)),
-			MaxConnections:  a.cfg.Limits.MaxUpstreamConnections,
-			DialTimeout:     connectLimit,
-		})
+		if a.cfg.Server.MySQLMode == "pooled" {
+			trafficService, err = gateway.New(a.cfg, a.secrets, connector, a.logger)
+		} else {
+			trafficService, err = relay.New(relay.Config{
+				ListenAddress:   a.cfg.Server.MySQLListen,
+				UpstreamAddress: net.JoinHostPort(a.cfg.Upstream.Host, strconv.Itoa(a.cfg.Upstream.Port)),
+				MaxConnections:  a.cfg.Limits.MaxUpstreamConnections,
+				DialTimeout:     connectLimit,
+			})
+		}
 		if err != nil {
-			_ = a.state.Transition(lifecycle.Failed, "configure relay", time.Now())
+			_ = a.state.Transition(lifecycle.Failed, "configure mysql service", time.Now())
 			return err
 		}
-		if err := relayServer.Start(ctx); err != nil {
+		if err := trafficService.Start(ctx); err != nil {
 			_ = a.state.Transition(lifecycle.Failed, "open mysql relay", time.Now())
 			return err
 		}
@@ -93,9 +105,9 @@ func (a *App) Run(ctx context.Context) error {
 
 	listener, err := net.Listen("tcp", a.cfg.Server.AdminListen)
 	if err != nil {
-		if relayServer != nil {
+		if trafficService != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			_ = relayServer.Shutdown(shutdownCtx)
+			_ = trafficService.Shutdown(shutdownCtx)
 			cancel()
 		}
 		_ = a.state.Transition(lifecycle.Failed, "open admin listener", time.Now())
@@ -105,10 +117,10 @@ func (a *App) Run(ctx context.Context) error {
 	a.adminAddr = listener.Addr().String()
 	a.mu.Unlock()
 
-	runtime := control.NewRuntime(a.state, a.cfg, relayServer, connector, time.Now().UTC())
+	runtime := control.NewRuntime(a.state, a.cfg, trafficService, connector, time.Now().UTC())
 	runtime.Start(ctx)
 	server := &http.Server{
-		Handler:           control.AppHandler(a.state, buildinfo.Current(), runtime),
+		Handler:           control.AppHandler(a.state, buildinfo.Current(), runtime, a.secrets.AdminToken.Reveal()),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -124,9 +136,9 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	a.readyOnce.Do(func() { close(a.ready) })
-	a.logger.Info("accelerator ready", "admin_listen", listener.Addr().String(), "version", buildinfo.Version)
-	if relayServer != nil {
-		a.logger.Info("mysql compatibility relay ready", "mysql_listen", relayServer.Address(), "upstream", a.cfg.Upstream.Host, "mode", "transparent-1-to-1")
+	a.logger.Info("accelerator ready", "admin_listen", listener.Addr().String(), "admin_auth", a.secrets.AdminToken.Reveal() != "", "version", buildinfo.Version)
+	if trafficService != nil {
+		a.logger.Info("mysql service ready", "mysql_listen", trafficService.Address(), "upstream", a.cfg.Upstream.Host, "mode", trafficService.Snapshot().Mode)
 	}
 
 	select {
@@ -148,8 +160,8 @@ func (a *App) Run(ctx context.Context) error {
 		_ = server.Close()
 		return err
 	}
-	if relayServer != nil {
-		if err := relayServer.Shutdown(shutdownContext); err != nil && !errors.Is(err, context.Canceled) {
+	if trafficService != nil {
+		if err := trafficService.Shutdown(shutdownContext); err != nil && !errors.Is(err, context.Canceled) {
 			_ = a.state.Transition(lifecycle.Failed, "relay shutdown failed", time.Now())
 			return err
 		}

@@ -10,8 +10,35 @@ import (
 )
 
 func TestDefaultValid(t *testing.T) {
-	if err := Default().Validate(); err != nil {
+	cfg := Default()
+	if cfg.Server.MySQLMode != "transparent" {
+		t.Fatalf("default mysql mode = %q", cfg.Server.MySQLMode)
+	}
+	if err := cfg.Validate(); err != nil {
 		t.Fatalf("default config invalid: %v", err)
+	}
+}
+
+func TestLoadMySQLModeFromEnvironment(t *testing.T) {
+	cfg, err := Load(LoadOptions{LookupEnv: func(name string) (string, bool) {
+		if name == "DBA_MYSQL_MODE" {
+			return "pooled", true
+		}
+		return "", false
+	}})
+	if err != nil {
+		t.Fatalf("load pooled mode: %v", err)
+	}
+	if cfg.Server.MySQLMode != "pooled" {
+		t.Fatalf("mysql mode = %q", cfg.Server.MySQLMode)
+	}
+}
+
+func TestValidateRejectsInvalidMySQLMode(t *testing.T) {
+	cfg := Default()
+	cfg.Server.MySQLMode = "magical"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "server.mysql_mode") {
+		t.Fatalf("invalid mysql mode error = %v", err)
 	}
 }
 
@@ -123,6 +150,38 @@ func TestSecretCannotBeFormattedOrMarshaled(t *testing.T) {
 	}
 	if strings.Contains(formatted, "secret-canary") || strings.Contains(string(encoded), "secret-canary") {
 		t.Fatalf("secret leaked: formatted=%q json=%q", formatted, encoded)
+	}
+}
+
+func TestAdminTokenIsResolvedAndRedacted(t *testing.T) {
+	cfg := Default()
+	cfg.Server.AdminTokenEnv = "DBA_ADMIN_TOKEN"
+	secrets, err := ResolveSecrets(cfg, func(name string) (string, bool) {
+		return "admin-secret-canary", name == "DBA_ADMIN_TOKEN"
+	})
+	if err != nil {
+		t.Fatalf("resolve admin token: %v", err)
+	}
+	if secrets.AdminToken.Reveal() != "admin-secret-canary" {
+		t.Fatal("admin token was not resolved")
+	}
+	if strings.Contains(fmt.Sprintf("%+v", secrets), "admin-secret-canary") {
+		t.Fatal("admin token leaked through formatting")
+	}
+	cfg.Server.AdminTokenEnv = ""
+	if _, err := ResolveSecrets(cfg, noEnvironment); err != nil {
+		t.Fatalf("optional admin auth: %v", err)
+	}
+}
+
+func TestAdminTokenRejectsMissingOrShortValue(t *testing.T) {
+	cfg := Default()
+	cfg.Server.AdminTokenEnv = "DBA_ADMIN_TOKEN"
+	if _, err := ResolveSecrets(cfg, noEnvironment); err == nil {
+		t.Fatal("missing admin token was accepted")
+	}
+	if _, err := ResolveSecrets(cfg, func(string) (string, bool) { return "too-short", true }); err == nil {
+		t.Fatal("short admin token was accepted")
 	}
 }
 

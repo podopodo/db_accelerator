@@ -18,7 +18,7 @@ import (
 type Runtime struct {
 	state     *lifecycle.Manager
 	config    config.Config
-	relay     *relay.Server
+	relay     RelaySnapshotter
 	upstream  *upstream.Connector
 	startedAt time.Time
 
@@ -27,6 +27,10 @@ type Runtime struct {
 	probeReport upstream.Report
 	probeError  string
 	probeKind   upstream.ErrorKind
+}
+
+type RelaySnapshotter interface {
+	Snapshot() relay.Snapshot
 }
 
 type StatusResponse struct {
@@ -77,7 +81,7 @@ type AccelerationStatus struct {
 	Reason  string `json:"reason"`
 }
 
-func NewRuntime(state *lifecycle.Manager, cfg config.Config, relayServer *relay.Server, connector *upstream.Connector, startedAt time.Time) *Runtime {
+func NewRuntime(state *lifecycle.Manager, cfg config.Config, relayServer RelaySnapshotter, connector *upstream.Connector, startedAt time.Time) *Runtime {
 	return &Runtime{
 		state:       state,
 		config:      cfg,
@@ -157,19 +161,32 @@ func (r *Runtime) Snapshot() StatusResponse {
 	r.mu.RUnlock()
 
 	active := relaySnapshot.Active
+	databaseLinks := relaySnapshot.DatabaseLinks
+	waiting := relaySnapshot.WaitingWork
+	pinned := relaySnapshot.PinnedWork
 	limit := r.config.Limits.MaxUpstreamConnections
 	percent := 0.0
 	if limit > 0 {
-		percent = math.Min(100, float64(active)/float64(limit)*100)
+		percent = math.Min(100, float64(databaseLinks)/float64(limit)*100)
 	}
 	dominant := "Compatibility relay is below its connection limit."
 	safeAction := "No action needed. Keep observing real client traffic."
+	if relaySnapshot.Mode == "protocol-pooled" {
+		dominant = "The pooled gateway is below its upstream connection limit."
+		safeAction = "No action needed. Pool capacity has headroom."
+	}
 	if upstreamStatus.Status == "error" {
 		dominant = "The upstream database probe is failing."
 		safeAction = "Check Laragon, port, credentials, and TLS policy."
 	} else if percent >= 90 {
-		dominant = "The transparent relay is at its upstream safety limit."
-		safeAction = "Reduce client pressure; pooling is not enabled in this build."
+		dominant = "The upstream connection pool is at its safety limit."
+		safeAction = "Reduce query concurrency or raise the verified database connection budget."
+	} else if waiting > 0 {
+		dominant = fmt.Sprintf("%d request(s) are waiting for an upstream connection.", waiting)
+		safeAction = "Inspect slow queries before changing the upstream connection limit."
+	} else if relaySnapshot.Mode == "protocol-pooled" && active > databaseLinks {
+		dominant = fmt.Sprintf("%d logical clients share %d active database link(s).", active, databaseLinks)
+		safeAction = "No action needed. Connection pooling is reducing idle database pressure."
 	} else if active > 0 {
 		dominant = fmt.Sprintf("%d direct database link(s) are active.", active)
 		safeAction = "Traffic is passing 1:1; do not claim connection reduction yet."
@@ -185,10 +202,10 @@ func (r *Runtime) Snapshot() StatusResponse {
 		Upstream:     upstreamStatus,
 		Pressure: PressureStatus{
 			LogicalClients: active,
-			WaitingWork:    0,
-			ActivePool:     active,
-			PinnedWork:     0,
-			DatabaseLinks:  active,
+			WaitingWork:    waiting,
+			ActivePool:     databaseLinks,
+			PinnedWork:     pinned,
+			DatabaseLinks:  databaseLinks,
 			SafeLimit:      limit,
 			Percent:        percent,
 			Dominant:       dominant,
@@ -200,10 +217,21 @@ func (r *Runtime) Snapshot() StatusResponse {
 			QueuedRequests:      r.config.Limits.MaxQueuedRequests,
 			QueuedBytes:         r.config.Limits.MaxQueuedBytes,
 		},
-		Acceleration: AccelerationStatus{
-			Enabled: false,
-			Mode:    "transparent compatibility relay",
-			Reason:  "Protocol-aware pooling and cache remain locked behind correctness gates.",
-		},
+		Acceleration: accelerationStatus(relaySnapshot.Mode),
+	}
+}
+
+func accelerationStatus(mode string) AccelerationStatus {
+	if mode == "protocol-pooled" {
+		return AccelerationStatus{
+			Enabled: true,
+			Mode:    "protocol-aware connection pooling",
+			Reason:  "Safe text queries share a bounded upstream pool; transactions remain pinned. Unsupported stateful commands are refused.",
+		}
+	}
+	return AccelerationStatus{
+		Enabled: false,
+		Mode:    "transparent compatibility relay",
+		Reason:  "Protocol-aware pooling and cache remain locked behind correctness gates.",
 	}
 }

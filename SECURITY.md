@@ -30,8 +30,10 @@ Please avoid public disclosure until a fix or mitigation is available, but under
 
 - Only explicit, tested MySQL and MariaDB versions may be treated as compatible.
 - TLS verification must be configured for non-local upstream connections.
+- Pooled mode does not yet implement client-to-accelerator TLS. Its SQL listener must remain on loopback or a trusted private network.
+- Pooled mode accepts only the single configured upstream identity and a conservative text-protocol subset. Unsupported commands fail closed.
 - Passwordless database access is a local-development exception requiring explicit opt-in.
-- The admin API and GUI are not safe to expose until authentication, authorization, and audit gates pass.
+- The admin API and GUI support one configured admin token, an HTTP-only same-site session cookie, and basic login throttling. HTTP transport TLS, RBAC, audit, account recovery, and distributed rate limiting are not implemented; keep the listener private.
 - Logs and diagnostics must not contain credentials, SQL values, or row data by default.
 - The accelerator must never claim a write succeeded before the upstream database confirms it.
 

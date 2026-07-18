@@ -31,7 +31,9 @@ type Config struct {
 
 type ServerConfig struct {
 	MySQLListen     string `yaml:"mysql_listen" json:"mysql_listen"`
+	MySQLMode       string `yaml:"mysql_mode" json:"mysql_mode"`
 	AdminListen     string `yaml:"admin_listen" json:"admin_listen"`
+	AdminTokenEnv   string `yaml:"admin_token_env" json:"admin_token_env"`
 	ShutdownTimeout string `yaml:"shutdown_timeout" json:"shutdown_timeout"`
 	DataDir         string `yaml:"data_dir" json:"data_dir"`
 }
@@ -87,6 +89,7 @@ func Default() Config {
 		Version: CurrentVersion,
 		Server: ServerConfig{
 			MySQLListen:     "127.0.0.1:3307",
+			MySQLMode:       "transparent",
 			AdminListen:     "127.0.0.1:9090",
 			ShutdownTimeout: "15s",
 			DataDir:         "./data",
@@ -201,7 +204,9 @@ func applyOverrides(cfg *Config, overrides Overrides) {
 
 func applyEnvironment(cfg *Config, lookup func(string) (string, bool)) error {
 	setString(lookup, "DBA_MYSQL_LISTEN", &cfg.Server.MySQLListen)
+	setString(lookup, "DBA_MYSQL_MODE", &cfg.Server.MySQLMode)
 	setString(lookup, "DBA_ADMIN_LISTEN", &cfg.Server.AdminListen)
+	setString(lookup, "DBA_ADMIN_TOKEN_ENV", &cfg.Server.AdminTokenEnv)
 	setString(lookup, "DBA_SHUTDOWN_TIMEOUT", &cfg.Server.ShutdownTimeout)
 	setString(lookup, "DBA_DATA_DIR", &cfg.Server.DataDir)
 	setString(lookup, "DBA_LOG_LEVEL", &cfg.Logging.Level)
@@ -286,6 +291,9 @@ func (c Config) Validate() error {
 	}
 	if err := validateAddress(c.Server.MySQLListen); err != nil {
 		problems = append(problems, "server.mysql_listen: "+err.Error())
+	}
+	if !oneOf(strings.ToLower(c.Server.MySQLMode), "transparent", "pooled") {
+		problems = append(problems, "server.mysql_mode must be transparent or pooled")
 	}
 	if err := validateAddress(c.Server.AdminListen); err != nil {
 		problems = append(problems, "server.admin_listen: "+err.Error())
@@ -439,7 +447,9 @@ const exampleYAML = `version: 1
 
 server:
   mysql_listen: 127.0.0.1:3307
+  mysql_mode: transparent
   admin_listen: 127.0.0.1:9090
+  admin_token_env: DBA_ADMIN_TOKEN
   shutdown_timeout: 15s
   data_dir: ./data
 
