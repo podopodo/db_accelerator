@@ -174,13 +174,14 @@ func runServe(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "configuration invalid: %v\n", err)
 		return 1
 	}
-	if _, err := config.ResolveSecrets(cfg, os.LookupEnv); err != nil {
+	secrets, err := config.ResolveSecrets(cfg, os.LookupEnv)
+	if err != nil {
 		fmt.Fprintf(stderr, "configuration secret invalid: %v\n", err)
 		return 1
 	}
 
 	logger := slog.New(slog.NewJSONHandler(stderr, &slog.HandlerOptions{Level: parseLogLevel(cfg.Logging.Level)}))
-	application := app.New(cfg, logger)
+	application := app.New(cfg, secrets, logger)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

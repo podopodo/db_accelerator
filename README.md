@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-2f855a.svg)](LICENSE)
 [![Status: experimental](https://img.shields.io/badge/status-experimental-c2410c.svg)](#project-status)
 
-Database Accelerator is an experimental MySQL/MariaDB connection gateway written in Go. It is being designed to sit between existing applications and one SQL database, fan many bounded logical connections into a smaller upstream pool, preserve transaction correctness, and later add conservative schema-aware read acceleration.
+Database Accelerator is an experimental MySQL/MariaDB connection gateway written in Go. The current competition build provides an unmodified-driver compatibility relay, a bounded database connection safety limit, live upstream diagnostics, and a responsive embedded operations dashboard in one binary. Protocol-aware pooling and conservative schema-aware read acceleration remain planned.
 
 Applications should eventually need only a connection host, port, user, or password change. Database Accelerator is a proxy and accelerator. It is not a database, replica, shard manager, or asynchronous write queue.
 
@@ -19,9 +19,9 @@ The `50x` goal means at least 50 mostly idle or short-autocommit logical client 
 
 ## Project status
 
-Foundation, configuration, health endpoints, MySQL packet framing, handshake parsing, and a direct upstream diagnostic connector exist. A live development probe has passed against MariaDB 11.7.2. Query relay, client authentication, transaction pinning, pooling, caching, the embedded GUI, and production hardening are not complete.
+The current build can transparently relay native MySQL/MariaDB wire traffic to one upstream server. It has been exercised with the unmodified MariaDB command-line client against MariaDB 11.7.2, including authentication and a real SQL query. The relay is deliberately one client to one upstream connection, capped by `max_upstream_connections`. This gives a useful plug-and-play compatibility demo and protects the database from excess connections, but **does not reduce connection count yet**.
 
-The MySQL wire listener stays disabled until its authentication and correctness gates pass. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for exact progress.
+The single binary also embeds a clean responsive dashboard and live read-only status API. It reports upstream health, server metadata, relay traffic, connection pressure, build identity, and the exact acceleration capability currently enabled. Pooling, transaction pinning, caching, authenticated administration, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
 
 ## Intended shape
 
@@ -72,6 +72,27 @@ accelerator config init --output accelerator.yaml
 accelerator config validate --config accelerator.yaml
 accelerator doctor --config accelerator.yaml
 accelerator serve --config accelerator.yaml
+```
+
+After `serve` starts:
+
+- Point a MySQL/MariaDB client at `server.mysql_listen`.
+- Open `http://server.admin_listen/` in a browser for the dashboard.
+- Keep both listeners on loopback or a trusted private network. Dashboard authentication is not implemented yet.
+
+Local Laragon example:
+
+```yaml
+server:
+  mysql_listen: 127.0.0.1:13307
+  admin_listen: 127.0.0.1:19090
+upstream:
+  enabled: true
+  host: 127.0.0.1
+  port: 3307
+  user: root
+  allow_empty_password: true
+  tls_mode: disabled
 ```
 
 Start from [`accelerator.example.yaml`](accelerator.example.yaml). Secrets are referenced through environment variables. An intentionally passwordless local account requires the explicit `allow_empty_password: true` setting; it is off by default.

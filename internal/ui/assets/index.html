@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="Database Accelerator experimental operations cockpit">
+  <title>Database Accelerator — Operations</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to operations</a>
+  <div class="shell">
+    <aside class="sidebar" aria-label="Primary navigation">
+      <a class="brand" href="#overview" aria-label="Database Accelerator overview">
+        <span class="brand-mark" aria-hidden="true">D/A</span>
+        <span><strong>Database</strong><small>Accelerator</small></span>
+      </a>
+      <nav>
+        <a class="nav-link selected" href="#overview"><span>01</span>Overview</a>
+        <a class="nav-link" href="#connections"><span>02</span>Connections</a>
+        <a class="nav-link" href="#database"><span>03</span>Database</a>
+        <a class="nav-link" href="#diagnostics"><span>04</span>Diagnostics</a>
+      </nav>
+      <div class="sidebar-note">
+        <span class="eyebrow">Build state</span>
+        <strong>Experimental relay</strong>
+        <p>Pooling and cache remain locked behind correctness gates.</p>
+      </div>
+      <footer>
+        <span>OpenAI Build Week</span>
+        <span id="build-short">v0.0.2-dev</span>
+      </footer>
+    </aside>
+
+    <main id="main">
+      <div class="health-strip" role="status" aria-live="polite">
+        <div class="health-primary">
+          <span id="health-dot" class="status-dot checking" aria-hidden="true"></span>
+          <strong id="health-label">Checking runtime</strong>
+          <span id="health-detail">Waiting for the first observation</span>
+        </div>
+        <div class="health-meta">
+          <span><b id="upstream-latency">—</b> probe</span>
+          <span><b id="observed-age">—</b> observed</span>
+          <button id="theme-toggle" type="button" aria-label="Switch color theme">Theme</button>
+        </div>
+      </div>
+
+      <div class="content">
+        <header id="overview" class="page-header">
+          <div>
+            <span class="eyebrow">Live operations / local demo</span>
+            <h1>See pressure before<br>the database feels it.</h1>
+          </div>
+          <div class="header-fact">
+            <span>Relay address</span>
+            <code id="relay-address">127.0.0.1:13307</code>
+            <small>Use native MySQL credentials. Wire traffic is passed unchanged.</small>
+          </div>
+        </header>
+
+        <div class="overview-grid">
+          <section class="pressure-panel" aria-labelledby="pressure-title">
+            <div class="section-heading">
+              <div>
+                <span class="eyebrow">Live topology</span>
+                <h2 id="pressure-title">Connection Pressure Map</h2>
+              </div>
+              <span id="relay-mode" class="mode-badge">transparent 1:1</span>
+            </div>
+
+            <div class="pressure-map" aria-describedby="pressure-summary">
+              <div class="pressure-stage client-stage">
+                <span class="stage-index">01</span>
+                <strong id="logical-clients">0</strong>
+                <span>logical clients</span>
+              </div>
+              <div class="flow-line" aria-hidden="true"><i></i></div>
+              <div class="pressure-stage">
+                <span class="stage-index">02</span>
+                <strong id="waiting-work">0</strong>
+                <span>waiting work</span>
+              </div>
+              <div class="flow-line" aria-hidden="true"><i></i></div>
+              <div class="pressure-stage pool-stage">
+                <span class="stage-index">03</span>
+                <strong id="active-pool">0</strong>
+                <span>active links</span>
+              </div>
+              <div class="flow-line" aria-hidden="true"><i></i></div>
+              <div class="pressure-stage">
+                <span class="stage-index">04</span>
+                <strong id="pinned-work">0</strong>
+                <span>pinned work</span>
+              </div>
+              <div class="flow-line" aria-hidden="true"><i></i></div>
+              <div class="pressure-stage database-stage">
+                <span class="stage-index">05</span>
+                <strong id="database-links">0</strong>
+                <span>database links</span>
+              </div>
+            </div>
+
+            <p id="pressure-summary" class="sr-only">No connection pressure data received yet.</p>
+            <div class="pressure-footer">
+              <div>
+                <span>Upstream safety limit</span>
+                <strong><b id="pressure-percent">0%</b> of <b id="safe-limit">200</b></strong>
+              </div>
+              <progress id="pressure-progress" max="100" value="0">0%</progress>
+              <p id="acceleration-reason">Protocol-aware pooling is not enabled in this build.</p>
+            </div>
+          </section>
+
+          <aside class="context-rail" aria-labelledby="constraint-title">
+            <span class="eyebrow">Dominant constraint</span>
+            <h2 id="constraint-title">Waiting for evidence.</h2>
+            <div class="safe-action">
+              <span>Safe action now</span>
+              <p id="safe-action">Wait for the first database probe.</p>
+            </div>
+            <dl class="compact-facts">
+              <div><dt>Accepted</dt><dd id="accepted-total">0</dd></div>
+              <div><dt>Rejected</dt><dd id="rejected-total">0</dd></div>
+              <div><dt>Client → DB</dt><dd id="bytes-up">0 B</dd></div>
+              <div><dt>DB → client</dt><dd id="bytes-down">0 B</dd></div>
+            </dl>
+          </aside>
+        </div>
+
+        <section id="connections" class="data-section" aria-labelledby="connection-title">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Relay boundary</span>
+              <h2 id="connection-title">Connection facts</h2>
+            </div>
+            <span class="source-note">Source: process counters · live</span>
+          </div>
+          <div class="fact-band">
+            <div><span>Active now</span><strong id="active-now">0</strong><small>connections</small></div>
+            <div><span>Dial failures</span><strong id="dial-errors">0</strong><small>since start</small></div>
+            <div><span>Relay errors</span><strong id="relay-errors">0</strong><small>since start</small></div>
+            <div><span>Process uptime</span><strong id="uptime">0s</strong><small>current run</small></div>
+          </div>
+          <div class="truth-callout">
+            <strong>Compatibility mode is honest.</strong>
+            <p>Each client currently owns one database link. This proves native wire compatibility, not connection reduction. Pooling turns on only after transaction and session-reset gates pass.</p>
+          </div>
+        </section>
+
+        <section id="database" class="data-section database-section" aria-labelledby="database-title">
+          <div class="section-heading">
+            <div>
+              <span class="eyebrow">Read-only upstream probe</span>
+              <h2 id="database-title">Database dossier</h2>
+            </div>
+            <span id="database-state" class="state-label checking">checking</span>
+          </div>
+          <div class="table-wrap" tabindex="0" aria-label="Database metadata table">
+            <table>
+              <tbody>
+                <tr><th scope="row">Server</th><td id="db-server">—</td><td id="db-comment">—</td></tr>
+                <tr><th scope="row">Address</th><td id="db-address">—</td><td id="db-checked">not checked</td></tr>
+                <tr><th scope="row">Character set</th><td id="db-charset">—</td><td id="db-collation">—</td></tr>
+                <tr><th scope="row">Transaction isolation</th><td id="db-isolation">—</td><td id="db-autocommit">—</td></tr>
+                <tr><th scope="row">SQL mode</th><td id="db-sql-mode" colspan="2">—</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p id="database-error" class="inline-error" hidden></p>
+        </section>
+
+        <section id="diagnostics" class="data-section diagnostics" aria-labelledby="diagnostics-title">
+          <div>
+            <span class="eyebrow">Build truth</span>
+            <h2 id="diagnostics-title">What works now</h2>
+          </div>
+          <ul class="gate-list">
+            <li class="passed"><span>Passed</span> MySQL wire byte relay</li>
+            <li class="passed"><span>Passed</span> MariaDB live health and metadata</li>
+            <li class="passed"><span>Passed</span> Bounded connection admission</li>
+            <li class="locked"><span>Locked</span> Protocol-aware connection pooling</li>
+            <li class="locked"><span>Locked</span> Schema-aware result cache</li>
+            <li class="locked"><span>Locked</span> Identified atomic operations</li>
+          </ul>
+          <div class="build-meta">
+            <span id="build-full">version unknown</span>
+            <span>Experimental. Not for production or financial data.</span>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div id="offline-banner" class="offline-banner" role="alert" hidden>Live API unavailable. Last good values remain on screen.</div>
+</body>
+</html>

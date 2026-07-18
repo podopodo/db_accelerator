@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ func TestRunBecomesReadyAndStops(t *testing.T) {
 	cfg.Server.DataDir = t.TempDir()
 	cfg.Server.ShutdownTimeout = "2s"
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	application := New(cfg, logger)
+	application := New(cfg, config.Secrets{}, logger)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
@@ -37,6 +38,16 @@ func TestRunBecomesReadyAndStops(t *testing.T) {
 	_ = response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("ready status = %d", response.StatusCode)
+	}
+	dashboard, err := http.Get("http://" + application.AdminAddress() + "/")
+	if err != nil {
+		t.Fatalf("dashboard request: %v", err)
+	}
+	defer dashboard.Body.Close()
+	buffer := make([]byte, 4096)
+	read, _ := dashboard.Body.Read(buffer)
+	if dashboard.StatusCode != http.StatusOK || !strings.Contains(string(buffer[:read]), "Connection Pressure Map") {
+		t.Fatalf("dashboard status=%d body=%q", dashboard.StatusCode, buffer[:read])
 	}
 
 	cancel()
