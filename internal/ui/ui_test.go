@@ -51,6 +51,9 @@ func TestDashboardQualityContractAssets(t *testing.T) {
 	css := readEmbedded(t, "assets/app.css")
 	script := readEmbedded(t, "assets/app.js")
 	combined := strings.ToLower(string(index) + string(css) + string(script))
+	if !strings.Contains(string(index), "/assets/app.css?v=3") || !strings.Contains(string(index), "/assets/app.js?v=3") {
+		t.Fatal("dashboard assets are missing their binary revision key")
+	}
 
 	for _, forbidden := range []string{
 		"https://", "http://", "glassmorphism", "gradient text", "revolutionize", "world-class", "seamlessly",
