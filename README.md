@@ -21,7 +21,7 @@ The `50x` goal means at least 50 mostly idle or short-autocommit logical client 
 
 The current build can transparently relay native MySQL/MariaDB wire traffic to one upstream server. It has been exercised with the unmodified MariaDB command-line client against MariaDB 11.7.2, including authentication and a real SQL query. The relay is deliberately one client to one upstream connection, capped by `max_upstream_connections`. This gives a useful plug-and-play compatibility demo and protects the database from excess connections, but **does not reduce connection count yet**.
 
-The single binary also embeds a clean responsive dashboard and live read-only status API. It reports upstream health, server metadata, relay traffic, connection pressure, build identity, and the exact acceleration capability currently enabled. Pooling, transaction pinning, caching, authenticated administration, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
+The single binary also embeds a responsive four-view operations console and live read-only status API. It reports upstream health, server metadata, relay traffic, connection pressure and history, build identity, configured guardrails, and the exact acceleration capability currently enabled. The interface embeds its fonts and assets and needs no runtime CDN. Pooling, transaction pinning, caching, authenticated administration, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
 
 ## Intended shape
 

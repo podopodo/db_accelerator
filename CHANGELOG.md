@@ -20,3 +20,6 @@ All notable changes will be recorded here.
 ### Changed
 
 - Go module path set to `github.com/podopodo/db_accelerator`.
+- Replaced the competition dashboard prototype with a dense four-view operations console.
+- Added live pressure history, runtime activity, capability boundaries, keyboard navigation, and responsive priority reflow.
+- Embedded Bricolage Grotesque, Lora, and IBM Plex Mono so the packaged interface has no font CDN dependency.

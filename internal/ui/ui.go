@@ -5,7 +5,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
-	"path"
+	"strings"
 )
 
 //go:embed assets/*
@@ -18,13 +18,15 @@ func Handler() http.Handler {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /assets/", func(w http.ResponseWriter, r *http.Request) {
-		name := path.Base(r.URL.Path)
+		name := strings.TrimPrefix(r.URL.Path, "/assets/")
 		var contentType string
 		switch name {
 		case "app.css":
 			contentType = "text/css; charset=utf-8"
 		case "app.js":
 			contentType = "application/javascript; charset=utf-8"
+		case "fonts/BricolageGrotesque-Variable.ttf", "fonts/Lora-Variable.ttf", "fonts/IBMPlexMono-Regular.ttf", "fonts/IBMPlexMono-SemiBold.ttf":
+			contentType = "font/ttf"
 		default:
 			http.NotFound(w, r)
 			return

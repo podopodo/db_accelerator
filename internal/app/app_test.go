@@ -44,10 +44,12 @@ func TestRunBecomesReadyAndStops(t *testing.T) {
 		t.Fatalf("dashboard request: %v", err)
 	}
 	defer dashboard.Body.Close()
-	buffer := make([]byte, 4096)
-	read, _ := dashboard.Body.Read(buffer)
-	if dashboard.StatusCode != http.StatusOK || !strings.Contains(string(buffer[:read]), "Connection Pressure Map") {
-		t.Fatalf("dashboard status=%d body=%q", dashboard.StatusCode, buffer[:read])
+	body, err := io.ReadAll(dashboard.Body)
+	if err != nil {
+		t.Fatalf("read dashboard: %v", err)
+	}
+	if dashboard.StatusCode != http.StatusOK || !strings.Contains(string(body), "Connection Pressure Map") {
+		t.Fatalf("dashboard status=%d", dashboard.StatusCode)
 	}
 
 	cancel()

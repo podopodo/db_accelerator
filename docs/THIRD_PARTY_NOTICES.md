@@ -26,6 +26,12 @@ This transitive test dependency uses a BSD-style license. Copyright (c) 2010–2
 
 Source: `https://gopkg.in/check.v1`
 
+## Embedded interface fonts
+
+The operations console embeds Bricolage Grotesque, Lora, and IBM Plex Mono from the official Google Fonts repository. Each family is licensed under the SIL Open Font License 1.1. The family-specific license notices are stored with the font assets in `internal/ui/assets/fonts/OFL*.txt` and must remain in source and binary distribution notices.
+
+Source: `https://github.com/google/fonts`
+
 ## Audit rule
 
 Every new module must be added to the allowlist only after its exact version, purpose, license, source, maintenance risk, and release-notice requirement are reviewed.
