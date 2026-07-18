@@ -1,0 +1,31 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage*.txt
+coverage*.html
+
+# Runtime state
+/data/
+/logs/
+/tmp/
+accelerator.local.yaml
+accelerator.managed.yaml
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Test and benchmark artifacts kept locally
+/artifacts/

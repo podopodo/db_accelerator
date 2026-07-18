@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://database-accelerator.invalid/schemas/benchmark-result-v1.json",
+  "title": "Database Accelerator benchmark result",
+  "type": "object",
+  "required": ["schema_version", "run_id", "started_at", "path", "environment", "workload", "metrics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "path": { "enum": ["direct", "accelerator"] },
+    "accelerator": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "commit": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "environment": {
+      "type": "object",
+      "required": ["server_product", "server_version", "server_config_digest", "os", "arch", "cpu", "ram_bytes"],
+      "properties": {
+        "server_product": { "enum": ["mysql", "mariadb"] },
+        "server_version": { "type": "string" },
+        "server_config_digest": { "type": "string" },
+        "driver": { "type": "string" },
+        "driver_version": { "type": "string" },
+        "os": { "type": "string" },
+        "arch": { "type": "string" },
+        "cpu": { "type": "string" },
+        "ram_bytes": { "type": "integer", "minimum": 1 },
+        "network": { "type": "string" },
+        "dataset_digest": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "workload": {
+      "type": "object",
+      "required": ["name", "seed", "duration_seconds", "open_clients", "active_concurrency"],
+      "properties": {
+        "name": { "type": "string" },
+        "seed": { "type": "integer" },
+        "duration_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "open_clients": { "type": "integer", "minimum": 0 },
+        "active_concurrency": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["operations", "errors", "timeouts", "p50_ms", "p95_ms", "p99_ms", "max_ms"],
+      "properties": {
+        "operations": { "type": "integer", "minimum": 0 },
+        "errors": { "type": "integer", "minimum": 0 },
+        "timeouts": { "type": "integer", "minimum": 0 },
+        "p50_ms": { "type": "number", "minimum": 0 },
+        "p95_ms": { "type": "number", "minimum": 0 },
+        "p99_ms": { "type": "number", "minimum": 0 },
+        "max_ms": { "type": "number", "minimum": 0 },
+        "throughput_per_second": { "type": "number", "minimum": 0 },
+        "accelerator_rss_bytes": { "type": "integer", "minimum": 0 },
+        "upstream_connections_peak": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,43 @@
+version: 1
+dataset:
+  seed: 21188
+  accounts: 10000
+  events: 100000
+  payload_bytes: 256
+
+profiles:
+  - name: idle-fanin
+    warmup: 30s
+    duration: 5m
+    client_steps: [100, 200, 1000, 5000, 10000]
+    ping_interval: 30s
+  - name: short-autocommit
+    warmup: 1m
+    duration: 10m
+    client_steps: [100, 500, 1000]
+    active_concurrency: [25, 50, 100, 200]
+    operations:
+      point_read: 90
+      counter_update: 10
+  - name: mixed
+    warmup: 1m
+    duration: 10m
+    active_concurrency: [25, 50, 100, 200]
+    operations:
+      point_read: 65
+      indexed_range_read: 15
+      explicit_id_insert: 10
+      single_row_update: 10
+  - name: account-transfer
+    warmup: 1m
+    duration: 10m
+    active_concurrency: [10, 25, 50, 100]
+    invariant: total_balance_unchanged
+  - name: connection-spike
+    warmup: 1m
+    duration: 15m
+    baseline_clients: 100
+    spike_clients: 10000
+    ramp: 10s
+    hold: 2m
+    repetitions: 5
