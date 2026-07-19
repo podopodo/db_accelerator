@@ -61,6 +61,8 @@ type Report struct {
 type Environment struct {
 	ServerProduct      string         `json:"server_product"`
 	ServerVersion      string         `json:"server_version"`
+	ServerOperatingSys string         `json:"server_os"`
+	ServerArchitecture string         `json:"server_arch"`
 	Address            string         `json:"address"`
 	OperatingSys       string         `json:"os"`
 	Architecture       string         `json:"arch"`
@@ -194,8 +196,8 @@ func Run(ctx context.Context, options Options) (_ Report, runErr error) {
 		return Report{}, err
 	}
 
-	var version, comment string
-	if err := admin.QueryRowContext(ctx, "SELECT VERSION(), @@version_comment").Scan(&version, &comment); err != nil {
+	var version, comment, serverOperatingSys, serverArchitecture string
+	if err := admin.QueryRowContext(ctx, "SELECT VERSION(), @@version_comment, @@version_compile_os, @@version_compile_machine").Scan(&version, &comment, &serverOperatingSys, &serverArchitecture); err != nil {
 		return Report{}, fmt.Errorf("read benchmark server identity: %w", err)
 	}
 	product := "mysql"
@@ -289,6 +291,8 @@ func Run(ctx context.Context, options Options) (_ Report, runErr error) {
 		Environment: Environment{
 			ServerProduct:      product,
 			ServerVersion:      version,
+			ServerOperatingSys: serverOperatingSys,
+			ServerArchitecture: serverArchitecture,
 			Address:            net.JoinHostPort(options.Config.Upstream.Host, strconv.Itoa(options.Config.Upstream.Port)),
 			OperatingSys:       runtime.GOOS,
 			Architecture:       runtime.GOARCH,
@@ -548,7 +552,7 @@ func createDataset(ctx context.Context, database *sql.DB, name string, rows int)
 		return fmt.Errorf("create benchmark table: %w", err)
 	}
 	digits := "(SELECT 0 n UNION ALL SELECT 1 UNION ALL SELECT 2 UNION ALL SELECT 3 UNION ALL SELECT 4 UNION ALL SELECT 5 UNION ALL SELECT 6 UNION ALL SELECT 7 UNION ALL SELECT 8 UNION ALL SELECT 9)"
-	statement := fmt.Sprintf("INSERT INTO %s (id, payload, counter) SELECT number, RPAD(CONCAT('row-', number, '-'), 128, 'x'), 0 FROM (SELECT a.n + b.n*10 + c.n*100 + d.n*1000 + 1 number FROM %s a CROSS JOIN %s b CROSS JOIN %s c CROSS JOIN %s d) generated WHERE number <= %d", table, digits, digits, digits, digits, rows)
+	statement := fmt.Sprintf("INSERT INTO %s (id, payload, counter) SELECT bench_id, RPAD(CONCAT('row-', bench_id, '-'), 128, 'x'), 0 FROM (SELECT a.n + b.n*10 + c.n*100 + d.n*1000 + 1 AS bench_id FROM %s a CROSS JOIN %s b CROSS JOIN %s c CROSS JOIN %s d) AS source_rows WHERE bench_id <= %d", table, digits, digits, digits, digits, rows)
 	if _, err := database.ExecContext(ctx, statement); err != nil {
 		return fmt.Errorf("populate benchmark table: %w", err)
 	}

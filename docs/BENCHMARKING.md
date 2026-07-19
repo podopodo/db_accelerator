@@ -45,7 +45,12 @@ Very short local reads can fall below the operating system timer resolution. The
 
 ## Recorded competition runs
 
-The repository includes two reproducibility runs from the same MariaDB 11.7.2 Windows amd64 environment: [run A](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-a.json) and [run B](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-b.json). The earlier [competition report](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json) remains available for history.
+The repository includes two reproducibility runs from each first supported server family:
+
+- MariaDB 11.7.2 on Windows amd64: [run A](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-a.json) and [run B](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-b.json).
+- Oracle MySQL 8.4.10 in a Linux x86-64 container on the same Windows host: [run A](benchmarks/2026-07-19-mysql-8.4.10-linux-container-windows-host-run-a.json) and [run B](benchmarks/2026-07-19-mysql-8.4.10-linux-container-windows-host-run-b.json).
+
+The earlier [competition report](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json) remains available for history.
 
 - 64 logical clients.
 - 8 active workers.
@@ -53,9 +58,9 @@ The repository includes two reproducibility runs from the same MariaDB 11.7.2 Wi
 - 64 direct database connections versus 8 through the accelerator.
 - 87.5% fewer physical connections and 8.0x fan-in.
 - Zero errors across 9,000 measured operations.
-- Both runs recorded the same server-config and dataset digests.
-- Direct throughput differed by 3.92%; accelerator throughput differed by 0.84%.
-- Direct reads were faster: the accelerator recorded 83.39% to 84.17% lower throughput and materially worse p95 latency in this local microbenchmark.
-- Cleanup verification found zero `dba_benchmark_%` schemas after both runs.
+- Each server pair recorded the same server-config and dataset digests.
+- MariaDB pair variance was 29.42% direct and 6.79% accelerated; MySQL pair variance was 17.87% direct and 10.61% accelerated. These noisy short-run throughput values are not product claims.
+- Direct reads were faster in all four local microbenchmarks. The reports retain the regression instead of filtering it.
+- Cleanup verification found zero `dba_benchmark_%` schemas on both servers after all runs.
 
 That result supports connection consolidation. It does not support a query-throughput claim.

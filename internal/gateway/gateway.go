@@ -170,7 +170,10 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 	handshakeConfig := protocol.DefaultHandshakeConfig(uint32(client.Info().ID))
 	handshakeConfig.ServerVersion = "DatabaseAccelerator-" + buildinfo.Version
 	handshakeConfig.AuthPlugin = protocol.NativePasswordPlugin
-	handshakeConfig.Capabilities &^= protocol.ClientDeprecateEOF | protocol.ClientSessionTrack
+	handshakeConfig.Capabilities &^= protocol.ClientDeprecateEOF |
+		protocol.ClientSessionTrack |
+		protocol.ClientMultiResults |
+		protocol.ClientPSMultiResults
 	handshake, err := protocol.NewHandshake(handshakeConfig)
 	if err != nil {
 		return err
@@ -463,36 +466,56 @@ func (s *clientSession) rollback(client *protocol.Client) error {
 
 func (s *clientSession) exec(ctx context.Context, client *protocol.Client, query string, transactional bool) error {
 	var result sql.Result
+	var warnings uint16
 	var err error
 	if transactional {
 		result, err = s.tx.ExecContext(ctx, query)
+		if err == nil {
+			warnings, err = readWarningCount(ctx, s.tx)
+		}
 	} else {
 		release, acquireErr := s.service.acquire(ctx, int64(len(query)))
 		if acquireErr != nil {
 			return s.writeSQLError(client, acquireErr)
 		}
 		defer release()
-		result, err = s.service.database.ExecContext(ctx, query)
+		connection, connectionErr := s.service.database.Conn(ctx)
+		if connectionErr != nil {
+			return s.writeSQLError(client, connectionErr)
+		}
+		defer connection.Close()
+		result, err = connection.ExecContext(ctx, query)
+		if err == nil {
+			warnings, err = readWarningCount(ctx, connection)
+		}
 	}
 	if err != nil {
 		return s.writeSQLError(client, err)
 	}
 	affected, _ := result.RowsAffected()
 	insertID, _ := result.LastInsertId()
-	_, err = s.write(client, 1, protocol.OKPayload(uint64(max(0, affected)), uint64(max(0, insertID)), s.status(), 0))
+	_, err = s.write(client, 1, protocol.OKPayload(uint64(max(0, affected)), uint64(max(0, insertID)), s.status(), warnings))
 	return err
 }
 
 func (s *clientSession) rows(ctx context.Context, client *protocol.Client, query string) error {
 	var rows *sql.Rows
+	var warningSource warningCounter
 	var err error
 	var release func()
 	if s.tx != nil {
 		rows, err = s.tx.QueryContext(ctx, query)
+		warningSource = s.tx
 	} else {
 		release, err = s.service.acquire(ctx, int64(len(query)))
 		if err == nil {
-			rows, err = s.service.database.QueryContext(ctx, query)
+			var connection *sql.Conn
+			connection, err = s.service.database.Conn(ctx)
+			if err == nil {
+				defer connection.Close()
+				rows, err = connection.QueryContext(ctx, query)
+				warningSource = connection
+			}
 		}
 	}
 	if release != nil {
@@ -547,8 +570,30 @@ func (s *clientSession) rows(ctx context.Context, client *protocol.Client, query
 	if err := rows.Err(); err != nil {
 		return s.writeSQLErrorAt(client, sequence, err)
 	}
-	_, err = s.write(client, sequence, protocol.EOFPayload(s.status(), 0))
+	if err := rows.Close(); err != nil {
+		return s.writeSQLErrorAt(client, sequence, err)
+	}
+	warnings, err := readWarningCount(ctx, warningSource)
+	if err != nil {
+		return s.writeSQLErrorAt(client, sequence, err)
+	}
+	_, err = s.write(client, sequence, protocol.EOFPayload(s.status(), warnings))
 	return err
+}
+
+type warningCounter interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func readWarningCount(ctx context.Context, source warningCounter) (uint16, error) {
+	if source == nil {
+		return 0, errors.New("warning source is unavailable")
+	}
+	var count uint64
+	if err := source.QueryRowContext(ctx, "SHOW COUNT(*) WARNINGS").Scan(&count); err != nil {
+		return 0, fmt.Errorf("read warning count: %w", err)
+	}
+	return uint16(min(count, uint64(math.MaxUint16))), nil
 }
 
 func (s *clientSession) write(client *protocol.Client, sequence uint8, payload []byte) (uint8, error) {
@@ -611,10 +656,17 @@ func columnDefinition(name, database string, column *sql.ColumnType) protocol.Co
 	if strings.Contains(databaseType, "UNSIGNED") {
 		definition.Flags |= protocol.ColumnFlagUnsigned
 	}
-	if _, scale, ok := column.DecimalSize(); ok {
-		definition.Decimals = byte(min(scale, 255))
-	}
 	definition.Type = mysqlColumnType(databaseType)
+	if precision, scale, ok := column.DecimalSize(); ok {
+		definition.Decimals = byte(min(scale, 255))
+		if definition.Type == protocol.ColumnTypeDecimal || definition.Type == protocol.ColumnTypeNewDecimal {
+			wireLength := precision + 1
+			if scale > 0 {
+				wireLength++
+			}
+			definition.Length = uint32(min(wireLength, int64(math.MaxUint32)))
+		}
+	}
 	if definition.Type == protocol.ColumnTypeBlob || definition.Type == protocol.ColumnTypeTinyBlob || definition.Type == protocol.ColumnTypeMediumBlob || definition.Type == protocol.ColumnTypeLongBlob || definition.Type == protocol.ColumnTypeGeometry || definition.Type == protocol.ColumnTypeBit {
 		definition.Charset = 63
 		definition.Flags |= protocol.ColumnFlagBinary

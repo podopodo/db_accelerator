@@ -35,6 +35,8 @@
       "required": [
         "server_product",
         "server_version",
+        "server_os",
+        "server_arch",
         "address",
         "os",
         "arch",
@@ -50,6 +52,8 @@
       "properties": {
         "server_product": { "enum": ["mysql", "mariadb"] },
         "server_version": { "type": "string", "minLength": 1 },
+        "server_os": { "type": "string", "minLength": 1 },
+        "server_arch": { "type": "string", "minLength": 1 },
         "address": { "type": "string", "minLength": 1 },
         "os": { "type": "string", "minLength": 1 },
         "arch": { "type": "string", "minLength": 1 },

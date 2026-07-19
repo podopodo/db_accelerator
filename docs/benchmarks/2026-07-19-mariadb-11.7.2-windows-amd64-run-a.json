@@ -1,12 +1,14 @@
 {
   "schema_version": 1,
-  "run_id": "20260719T065644Z-4b096a79",
-  "started_at": "2026-07-19T06:56:44.7198101Z",
-  "completed_at": "2026-07-19T06:56:45.1772066Z",
+  "run_id": "20260719T071427Z-1f9869ea",
+  "started_at": "2026-07-19T07:14:27.3113378Z",
+  "completed_at": "2026-07-19T07:14:27.8808686Z",
   "confidence": "local-measured-experimental",
   "environment": {
     "server_product": "mariadb",
     "server_version": "11.7.2-MariaDB-log",
+    "server_os": "Win64",
+    "server_arch": "x64",
     "address": "127.0.0.1:3307",
     "os": "windows",
     "arch": "amd64",
@@ -15,7 +17,7 @@
     "driver": "github.com/go-sql-driver/mysql",
     "driver_version": "v1.9.3",
     "accelerator_version": "0.0.5-dev",
-    "accelerator_commit": "workspace-baseline",
+    "accelerator_commit": "workspace-cross-server-baseline",
     "server_settings": {
       "max_connections": 151,
       "innodb_buffer_pool_bytes": 134217728,
@@ -42,40 +44,40 @@
     "query_shape": "single-row primary-key SELECT; no cache; local TCP"
   },
   "direct": {
-    "client_ready_ms": 6.991,
+    "client_ready_ms": 10.6346,
     "peak_database_connections": 64,
     "operations": 3000,
     "errors": 0,
-    "duration_ms": 47.96,
-    "throughput_per_second": 65027.982,
+    "duration_ms": 77.176,
+    "throughput_per_second": 45459.056,
     "p50_ms": 0,
-    "p95_ms": 0.535,
-    "p99_ms": 0.597,
-    "max_ms": 0.826,
-    "peak_heap_alloc_bytes": 3249960,
-    "peak_goroutines": 231
+    "p95_ms": 0.596,
+    "p99_ms": 0.806,
+    "max_ms": 1.902,
+    "peak_heap_alloc_bytes": 3162856,
+    "peak_goroutines": 229
   },
   "accelerator": {
-    "client_ready_ms": 6.824,
+    "client_ready_ms": 10.9119,
     "peak_database_connections": 8,
     "operations": 3000,
     "errors": 0,
-    "duration_ms": 291.4192,
-    "throughput_per_second": 10294.448684232199,
-    "p50_ms": 0.5396,
-    "p95_ms": 1.5704,
-    "p99_ms": 1.6847,
-    "max_ms": 2.1605,
-    "peak_heap_alloc_bytes": 1765520,
-    "peak_goroutines": 240
+    "duration_ms": 318.44,
+    "throughput_per_second": 9420.92701921869,
+    "p50_ms": 0.5983,
+    "p95_ms": 1.6631,
+    "p99_ms": 2.1971,
+    "max_ms": 3.2216,
+    "peak_heap_alloc_bytes": 1887896,
+    "peak_goroutines": 244
   },
   "gains": {
     "connections_saved": 56,
     "connection_reduction_percent": 87.5,
     "fan_in_ratio": 8,
-    "client_ready_speedup": 1.02,
-    "throughput_change_percent": -84.17,
-    "p95_latency_change_percent": -193.53
+    "client_ready_speedup": 0.97,
+    "throughput_change_percent": -79.28,
+    "p95_latency_change_percent": -179.04
   },
   "evidence": {
     "measured": true,

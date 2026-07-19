@@ -3,11 +3,14 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -74,6 +77,25 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 
 	client := openGatewayClient(t, cfg, secrets, service.Address())
 	defer client.Close()
+	multiStatementConfig := driver.NewConfig()
+	multiStatementConfig.User = cfg.Upstream.User
+	multiStatementConfig.Passwd = secrets.UpstreamPassword.Reveal()
+	multiStatementConfig.Net = "tcp"
+	multiStatementConfig.Addr = service.Address()
+	multiStatementConfig.DBName = cfg.Upstream.Database
+	multiStatementConfig.MultiStatements = true
+	multiStatementConfig.Timeout = 3 * time.Second
+	multiStatementConnector, err := driver.NewConnector(multiStatementConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	multiStatementClient := sql.OpenDB(multiStatementConnector)
+	if err := multiStatementClient.Ping(); err == nil {
+		multiStatementClient.Close()
+		t.Fatal("unsupported multi-statement client completed handshake")
+	}
+	_ = multiStatementClient.Close()
+
 	var version string
 	var answer int
 	if err := client.QueryRow("SELECT VERSION(), CAST(42 AS SIGNED)").Scan(&version, &answer); err != nil {
@@ -92,15 +114,113 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	if decimalValue != "12.34" || unicodeValue != "བཀྲ་ཤིས" || nullableValue.Valid || len(binaryValue) != 2 || binaryValue[0] != 0 || binaryValue[1] != 0xff {
 		t.Fatalf("datatype values decimal=%q unicode=%q null=%+v binary=%x", decimalValue, unicodeValue, nullableValue, binaryValue)
 	}
+	var directEmpty, acceleratedEmpty string
+	if err := admin.QueryRow("SELECT ''").Scan(&directEmpty); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.QueryRow("SELECT ''").Scan(&acceleratedEmpty); err != nil {
+		t.Fatal(err)
+	}
+	if directEmpty != acceleratedEmpty {
+		t.Fatalf("empty string direct=%q accelerated=%q", directEmpty, acceleratedEmpty)
+	}
+	metadataQuery := "SELECT CAST(12.34 AS DECIMAL(10,2)) AS price, CAST(42 AS SIGNED) AS quantity, CAST('hello' AS CHAR(12)) AS label"
+	directShape := readColumnShape(t, admin, metadataQuery)
+	acceleratedShape := readColumnShape(t, client, metadataQuery)
+	if fmt.Sprint(directShape) != fmt.Sprint(acceleratedShape) {
+		t.Fatalf("column metadata direct=%+v accelerated=%+v", directShape, acceleratedShape)
+	}
+
+	directConnection, err := admin.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var directCast, acceleratedCast uint64
+	if err := directConnection.QueryRowContext(context.Background(), "SELECT CAST('not-a-number' AS UNSIGNED)").Scan(&directCast); err != nil {
+		t.Fatal(err)
+	}
+	var directWarnings uint16
+	if err := directConnection.QueryRowContext(context.Background(), "SHOW COUNT(*) WARNINGS").Scan(&directWarnings); err != nil {
+		t.Fatal(err)
+	}
+	if err := directConnection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.QueryRow("SELECT CAST('not-a-number' AS UNSIGNED)").Scan(&acceleratedCast); err != nil {
+		t.Fatal(err)
+	}
+	var acceleratedWarnings uint16
+	if err := client.QueryRow("SHOW COUNT(*) WARNINGS").Scan(&acceleratedWarnings); err != nil {
+		t.Fatal(err)
+	}
+	if directCast != acceleratedCast || directWarnings == 0 || acceleratedWarnings != directWarnings {
+		t.Fatalf("warning result direct=%d/%d accelerated=%d/%d", directCast, directWarnings, acceleratedCast, acceleratedWarnings)
+	}
 	var largeValue string
 	if err := client.QueryRow("SELECT REPEAT('x', 1048576)").Scan(&largeValue); err != nil || len(largeValue) != 1048576 {
 		t.Fatalf("large row bytes=%d err=%v", len(largeValue), err)
+	}
+	if _, err := client.Exec("CREATE TABLE stream_rows (id INT PRIMARY KEY) ENGINE=InnoDB"); err != nil {
+		t.Fatal(err)
+	}
+	values := make([]string, 48)
+	for index := range values {
+		values[index] = fmt.Sprintf("(%d)", index+1)
+	}
+	if _, err := client.Exec("INSERT INTO stream_rows (id) VALUES " + strings.Join(values, ",")); err != nil {
+		t.Fatal(err)
+	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	monitorDone := make(chan struct{})
+	peakResult := make(chan uint64, 1)
+	go monitorHeap(monitorDone, peakResult)
+	stream, err := client.Query("SELECT REPEAT('x', 1048576) FROM stream_rows ORDER BY id")
+	if err != nil {
+		close(monitorDone)
+		<-peakResult
+		t.Fatal(err)
+	}
+	streamedRows := 0
+	for stream.Next() {
+		var chunk []byte
+		if err := stream.Scan(&chunk); err != nil {
+			stream.Close()
+			close(monitorDone)
+			<-peakResult
+			t.Fatal(err)
+		}
+		if len(chunk) != 1048576 {
+			t.Fatalf("streamed row bytes=%d", len(chunk))
+		}
+		streamedRows++
+		if streamedRows%4 == 0 {
+			runtime.GC()
+		}
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	close(monitorDone)
+	peakHeap := <-peakResult
+	if streamedRows != len(values) {
+		t.Fatalf("streamed rows=%d", streamedRows)
+	}
+	if growth := peakHeap - min(peakHeap, before.HeapAlloc); growth > 40<<20 {
+		t.Fatalf("streaming heap growth=%d bytes; result may be fully buffered", growth)
 	}
 	if _, err := client.Exec("CREATE TABLE ledger (id BIGINT PRIMARY KEY, balance BIGINT NOT NULL) ENGINE=InnoDB"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := client.Exec("INSERT INTO ledger (id, balance) VALUES (1, 100)"); err != nil {
 		t.Fatal(err)
+	}
+	_, directDuplicate := admin.Exec("INSERT INTO " + databaseName + ".ledger (id, balance) VALUES (1, 100)")
+	_, acceleratedDuplicate := client.Exec("INSERT INTO ledger (id, balance) VALUES (1, 100)")
+	var directMySQL, acceleratedMySQL *driver.MySQLError
+	if !errors.As(directDuplicate, &directMySQL) || !errors.As(acceleratedDuplicate, &acceleratedMySQL) || directMySQL.Number != acceleratedMySQL.Number || directMySQL.SQLState != acceleratedMySQL.SQLState {
+		t.Fatalf("duplicate errors direct=%v accelerated=%v", directDuplicate, acceleratedDuplicate)
 	}
 	if _, err := client.Exec("CREATE TABLE generated_ids (id BIGINT AUTO_INCREMENT PRIMARY KEY, note VARCHAR(32)) ENGINE=InnoDB"); err != nil {
 		t.Fatal(err)
@@ -170,6 +290,57 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	for _, database := range clients {
 		_ = database.Close()
 	}
+}
+
+func monitorHeap(done <-chan struct{}, result chan<- uint64) {
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	var peak uint64
+	for {
+		var memory runtime.MemStats
+		runtime.ReadMemStats(&memory)
+		peak = max(peak, memory.HeapAlloc)
+		select {
+		case <-done:
+			result <- peak
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+type columnShape struct {
+	Name       string
+	Type       string
+	Length     int64
+	HasLength  bool
+	Nullable   bool
+	HasNull    bool
+	Precision  int64
+	Scale      int64
+	HasDecimal bool
+}
+
+func readColumnShape(t *testing.T, database *sql.DB, query string) []columnShape {
+	t.Helper()
+	rows, err := database.Query(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shape := make([]columnShape, len(types))
+	for index, column := range types {
+		shape[index].Name = column.Name()
+		shape[index].Type = column.DatabaseTypeName()
+		shape[index].Length, shape[index].HasLength = column.Length()
+		shape[index].Nullable, shape[index].HasNull = column.Nullable()
+		shape[index].Precision, shape[index].Scale, shape[index].HasDecimal = column.DecimalSize()
+	}
+	return shape
 }
 
 func openGatewayClient(t *testing.T, cfg config.Config, secrets config.Secrets, address string) *sql.DB {

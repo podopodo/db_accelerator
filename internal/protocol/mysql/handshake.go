@@ -260,7 +260,7 @@ func (h *Handshake) validateCapabilities(client Capability, charset byte) error 
 		return fmt.Errorf("%w: compression", ErrUnsupportedCapability)
 	}
 	unsupported := client &^ h.config.Capabilities
-	permittedClientOnly := ClientSSL | ClientFoundRows | ClientLocalFiles | ClientMultiStatements | ClientSessionTrack | ClientRememberOptions
+	permittedClientOnly := ClientSSL | ClientFoundRows | ClientLocalFiles | ClientMultiResults | ClientPSMultiResults | ClientSessionTrack | ClientRememberOptions
 	if unsupported&^permittedClientOnly != 0 {
 		return fmt.Errorf("%w: unknown requested flag 0x%08x", ErrUnsupportedCapability, uint32(unsupported&^permittedClientOnly))
 	}

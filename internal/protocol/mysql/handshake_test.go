@@ -131,6 +131,19 @@ func TestParseRejectsUnsupportedCompression(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUnadvertisedMultiStatements(t *testing.T) {
+	config := DefaultHandshakeConfig(7)
+	config.Capabilities &^= ClientMultiStatements
+	handshake, err := NewHandshake(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := buildHandshakeResponse(config.Capabilities|ClientMultiStatements, 45, "user", nil, "", DefaultAuthPlugin, nil)
+	if _, err := handshake.ParseResponse(payload); !errors.Is(err, ErrUnsupportedCapability) {
+		t.Fatalf("multi-statement error = %v", err)
+	}
+}
+
 func TestParseRejectsUnknownCapability(t *testing.T) {
 	handshake, _ := NewHandshake(DefaultHandshakeConfig(1))
 	payload := buildHandshakeResponse(DefaultServerCapabilities|Capability(1<<30), 45, "user", nil, "", DefaultAuthPlugin, nil)
