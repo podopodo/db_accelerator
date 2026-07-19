@@ -1,0 +1,64 @@
+name: MySQL compatibility
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    name: ${{ matrix.name }} differential gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MySQL 8.4
+            image: mysql:8.4
+            prefix: DBA_TEST_MYSQL
+          - name: MariaDB 11.4
+            image: mariadb:11.4
+            prefix: DBA_TEST_MARIADB
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: dba-ci-only-password
+          MARIADB_ROOT_PASSWORD: dba-ci-only-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdba-ci-only-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run direct-versus-accelerated corpus
+        env:
+          DBA_TEST_SERVER_PREFIX: ${{ matrix.prefix }}
+          DBA_TEST_MYSQL_HOST: 127.0.0.1
+          DBA_TEST_MYSQL_PORT: "3306"
+          DBA_TEST_MYSQL_USER: root
+          DBA_TEST_MYSQL_PASSWORD: dba-ci-only-password
+          DBA_TEST_MARIADB_HOST: 127.0.0.1
+          DBA_TEST_MARIADB_PORT: "3306"
+          DBA_TEST_MARIADB_USER: root
+          DBA_TEST_MARIADB_PASSWORD: dba-ci-only-password
+        run: |
+          set -o pipefail
+          go test ./internal/upstream ./internal/relay ./internal/gateway -run TestIntegration -count=1 -v 2>&1 | tee compatibility.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: compatibility-${{ matrix.prefix }}
+          path: compatibility.log
+          if-no-files-found: error

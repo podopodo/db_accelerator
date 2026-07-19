@@ -27,9 +27,36 @@ func NativePasswordToken(password string, seed []byte) []byte {
 }
 
 func NativePasswordMatches(response []byte, password string, seed []byte) bool {
-	expected := NativePasswordToken(password, seed)
-	if len(response) != len(expected) {
+	return NativePasswordVerifierMatches(response, NativePasswordVerifier(password), seed)
+}
+
+// NativePasswordVerifier returns the double-SHA-1 verifier required by the
+// legacy mysql_native_password protocol. It avoids retaining plaintext in the
+// protocol service but is not a general-purpose password hash.
+func NativePasswordVerifier(password string) []byte {
+	if password == "" {
+		return nil
+	}
+	stage1 := sha1.Sum([]byte(password)) // #nosec G401 -- protocol compatibility.
+	stage2 := sha1.Sum(stage1[:])        // #nosec G401 -- protocol compatibility.
+	return append([]byte(nil), stage2[:]...)
+}
+
+func NativePasswordVerifierMatches(response, verifier, seed []byte) bool {
+	if len(verifier) == 0 {
+		return len(response) == 0
+	}
+	if len(response) != sha1.Size || len(verifier) != sha1.Size {
 		return false
 	}
-	return subtle.ConstantTimeCompare(response, expected) == 1
+	challenge := make([]byte, 0, len(seed)+len(verifier))
+	challenge = append(challenge, seed...)
+	challenge = append(challenge, verifier...)
+	scramble := sha1.Sum(challenge) // #nosec G401 -- protocol compatibility.
+	candidateStage1 := make([]byte, sha1.Size)
+	for index := range candidateStage1 {
+		candidateStage1[index] = response[index] ^ scramble[index]
+	}
+	candidateVerifier := sha1.Sum(candidateStage1) // #nosec G401 -- protocol compatibility.
+	return subtle.ConstantTimeCompare(candidateVerifier[:], verifier) == 1
 }

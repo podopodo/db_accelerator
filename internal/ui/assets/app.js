@@ -310,6 +310,9 @@
     text("diag-relay-address", data.relay.listen_address);
     text("rail-upstream", data.relay.upstream_address);
     text("diag-upstream-address", data.relay.upstream_address);
+    const clientTLSMode = data.relay.client_tls_mode || "disabled";
+    text("diag-client-tls", clientTLSMode === "required" ? "TLS 1.2+ required" : clientTLSMode === "passthrough" ? "Database TLS passthrough" : "Plaintext / protected boundary");
+    text("diag-client-tls-expiry", data.relay.client_tls_expires_at ? `expires ${formatDate(data.relay.client_tls_expires_at)}` : "not terminated here");
     text("relay-mode", data.relay.mode.replaceAll("-", " "));
 
     const pooled = data.relay.mode === "protocol-pooled";

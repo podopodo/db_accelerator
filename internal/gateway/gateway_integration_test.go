@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	driver "github.com/go-sql-driver/mysql"
 
 	"github.com/podopodo/db_accelerator/internal/config"
+	"github.com/podopodo/db_accelerator/internal/testkit"
 	"github.com/podopodo/db_accelerator/internal/upstream"
 )
 
@@ -51,6 +53,7 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	cfg.Upstream.Database = databaseName
 	cfg.Server.MySQLMode = "pooled"
 	cfg.Server.MySQLListen = "127.0.0.1:0"
+	configureGatewayTestTLS(t, &cfg)
 	cfg.Limits.MaxLogicalConnections = 100
 	cfg.Limits.MaxUpstreamConnections = 1
 	connector, err := upstream.New(cfg, secrets)
@@ -77,14 +80,84 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 
 	client := openGatewayClient(t, cfg, secrets, service.Address())
 	defer client.Close()
+	if snapshot := service.Snapshot(); snapshot.ClientTLSMode != "required" || snapshot.ClientTLSExpires == nil {
+		t.Fatalf("client TLS snapshot = %+v", snapshot)
+	}
+	downgradeConfig := driver.NewConfig()
+	downgradeConfig.User = cfg.Server.MySQLClientUser
+	downgradeConfig.Passwd = secrets.ClientPassword.Reveal()
+	downgradeConfig.Net = "tcp"
+	downgradeConfig.Addr = service.Address()
+	downgradeConfig.DBName = cfg.Upstream.Database
+	downgradeConfig.Timeout = 3 * time.Second
+	downgradeConnector, err := driver.NewConnector(downgradeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downgradeClient := sql.OpenDB(downgradeConnector)
+	if err := downgradeClient.Ping(); err == nil {
+		downgradeClient.Close()
+		t.Fatal("plaintext client bypassed required TLS")
+	}
+	_ = downgradeClient.Close()
+	untrustedConfig := driver.NewConfig()
+	untrustedConfig.User = cfg.Server.MySQLClientUser
+	untrustedConfig.Passwd = secrets.ClientPassword.Reveal()
+	untrustedConfig.Net = "tcp"
+	untrustedConfig.Addr = service.Address()
+	untrustedConfig.DBName = cfg.Upstream.Database
+	untrustedConfig.Timeout = 3 * time.Second
+	untrustedConfig.TLS = gatewayUntrustedClientTLS()
+	untrustedConnector, err := driver.NewConnector(untrustedConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	untrustedClient := sql.OpenDB(untrustedConnector)
+	if err := untrustedClient.Ping(); err == nil {
+		untrustedClient.Close()
+		t.Fatal("client accepted an untrusted TLS certificate")
+	}
+	_ = untrustedClient.Close()
+	for _, credentials := range []struct {
+		name     string
+		user     string
+		password string
+	}{
+		{name: "upstream identity", user: cfg.Upstream.User, password: secrets.UpstreamPassword.Reveal()},
+		{name: "wrong client password", user: cfg.Server.MySQLClientUser, password: "wrong-client-password"},
+	} {
+		t.Run("reject "+credentials.name, func(t *testing.T) {
+			authConfig := driver.NewConfig()
+			authConfig.User = credentials.user
+			authConfig.Passwd = credentials.password
+			authConfig.Net = "tcp"
+			authConfig.Addr = service.Address()
+			authConfig.DBName = cfg.Upstream.Database
+			authConfig.Timeout = 3 * time.Second
+			authConfig.TLS = gatewayTestClientTLS(t, cfg)
+			authConnector, err := driver.NewConnector(authConfig)
+			if err != nil {
+				t.Fatal(err)
+			}
+			authClient := sql.OpenDB(authConnector)
+			defer authClient.Close()
+			err = authClient.Ping()
+			var mysqlError *driver.MySQLError
+			leaked := credentials.password != "" && strings.Contains(fmt.Sprint(err), credentials.password)
+			if !errors.As(err, &mysqlError) || mysqlError.Number != 1045 || leaked {
+				t.Fatalf("authentication error = %v", err)
+			}
+		})
+	}
 	multiStatementConfig := driver.NewConfig()
-	multiStatementConfig.User = cfg.Upstream.User
-	multiStatementConfig.Passwd = secrets.UpstreamPassword.Reveal()
+	multiStatementConfig.User = cfg.Server.MySQLClientUser
+	multiStatementConfig.Passwd = secrets.ClientPassword.Reveal()
 	multiStatementConfig.Net = "tcp"
 	multiStatementConfig.Addr = service.Address()
 	multiStatementConfig.DBName = cfg.Upstream.Database
 	multiStatementConfig.MultiStatements = true
 	multiStatementConfig.Timeout = 3 * time.Second
+	multiStatementConfig.TLS = gatewayTestClientTLS(t, cfg)
 	multiStatementConnector, err := driver.NewConnector(multiStatementConfig)
 	if err != nil {
 		t.Fatal(err)
@@ -130,6 +203,39 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	if fmt.Sprint(directShape) != fmt.Sprint(acceleratedShape) {
 		t.Fatalf("column metadata direct=%+v accelerated=%+v", directShape, acceleratedShape)
 	}
+
+	if _, err := client.Exec(`CREATE TABLE differential_values (
+		id INT PRIMARY KEY,
+		text_value VARCHAR(64) NOT NULL,
+		unicode_value VARCHAR(64) NOT NULL,
+		decimal_value DECIMAL(10,2) NOT NULL,
+		date_value DATE NOT NULL,
+		time_value TIME(6) NOT NULL,
+		json_value JSON NOT NULL,
+		blob_value BLOB NOT NULL,
+		nullable_value VARCHAR(64) NULL,
+		signed_value BIGINT NOT NULL,
+		unsigned_value BIGINT UNSIGNED NOT NULL
+	) ENGINE=InnoDB`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Exec(`INSERT INTO differential_values VALUES (
+		1, 'plain', 'བཀྲ་ཤིས', -12.34, '2026-07-19', '12:34:56.123456',
+		'{"a":1}', X'00FF', NULL, -9223372036854775808, 18446744073709551615
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	differentialQuery := "SELECT * FROM " + databaseName + ".differential_values ORDER BY id"
+	for run := 1; run <= 3; run++ {
+		direct := testkit.CaptureQuery(context.Background(), admin, differentialQuery)
+		accelerated := testkit.CaptureQuery(context.Background(), client, differentialQuery)
+		assertDifferentialMatch(t, prefix, run, differentialQuery, direct, accelerated)
+	}
+	missingQuery := "SELECT * FROM " + databaseName + ".differential_missing"
+	assertDifferentialMatch(t, prefix, 1, missingQuery,
+		testkit.CaptureQuery(context.Background(), admin, missingQuery),
+		testkit.CaptureQuery(context.Background(), client, missingQuery),
+	)
 
 	directConnection, err := admin.Conn(context.Background())
 	if err != nil {
@@ -292,6 +398,30 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	}
 }
 
+func assertDifferentialMatch(t *testing.T, server string, run int, operation string, direct, accelerated testkit.DifferentialSnapshot) {
+	t.Helper()
+	mismatches := testkit.CompareDifferential(direct, accelerated)
+	if len(mismatches) == 0 {
+		return
+	}
+	path := filepath.Join(t.TempDir(), fmt.Sprintf("differential-run-%d.json", run))
+	err := testkit.SaveDifferentialReproduction(path, testkit.DifferentialReproduction{
+		SchemaVersion: 1,
+		CreatedAt:     time.Now().UTC(),
+		Seed:          21188,
+		Server:        server,
+		Driver:        "github.com/go-sql-driver/mysql v1.9.3",
+		Operation:     operation,
+		Direct:        direct,
+		Proxy:         accelerated,
+		Mismatches:    mismatches,
+	})
+	if err != nil {
+		t.Fatalf("differential mismatch=%+v; save reproduction: %v", mismatches, err)
+	}
+	t.Fatalf("differential mismatch=%+v; reproduction=%s", mismatches, path)
+}
+
 func monitorHeap(done <-chan struct{}, result chan<- uint64) {
 	ticker := time.NewTicker(2 * time.Millisecond)
 	defer ticker.Stop()
@@ -346,15 +476,16 @@ func readColumnShape(t *testing.T, database *sql.DB, query string) []columnShape
 func openGatewayClient(t *testing.T, cfg config.Config, secrets config.Secrets, address string) *sql.DB {
 	t.Helper()
 	client := driver.NewConfig()
-	client.User = cfg.Upstream.User
-	client.Passwd = secrets.UpstreamPassword.Reveal()
+	client.User = cfg.Server.MySQLClientUser
+	client.Passwd = secrets.ClientPassword.Reveal()
 	client.Net = "tcp"
 	client.Addr = address
 	client.DBName = cfg.Upstream.Database
 	client.Timeout = 3 * time.Second
 	client.ReadTimeout = 5 * time.Second
 	client.WriteTimeout = 5 * time.Second
-	client.TLS = nil
+	client.ParseTime = true
+	client.TLS = gatewayTestClientTLS(t, cfg)
 	connector, err := driver.NewConnector(client)
 	if err != nil {
 		t.Fatal(err)
@@ -387,11 +518,21 @@ func gatewayIntegrationConfiguration(t *testing.T, prefix string) (config.Config
 	cfg.Upstream.Host = required("HOST")
 	cfg.Upstream.Port = port
 	cfg.Upstream.User = required("USER")
+	cfg.Server.MySQLClientUser = "accelerator-test-client"
 	cfg.Upstream.Database = ""
 	cfg.Upstream.TLSMode = "disabled"
 	cfg.Upstream.AllowEmptyPassword = os.Getenv(prefix+"_ALLOW_EMPTY_PASSWORD") == "true"
 	password := os.Getenv(prefix + "_PASSWORD")
-	secrets, err := config.ResolveSecrets(cfg, func(string) (string, bool) { return password, true })
+	secrets, err := config.ResolveSecrets(cfg, func(name string) (string, bool) {
+		switch name {
+		case cfg.Upstream.PasswordEnv:
+			return password, true
+		case cfg.Server.MySQLClientPasswordEnv:
+			return "accelerator-test-password", true
+		default:
+			return "", false
+		}
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

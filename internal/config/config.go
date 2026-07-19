@@ -30,12 +30,18 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	MySQLListen     string `yaml:"mysql_listen" json:"mysql_listen"`
-	MySQLMode       string `yaml:"mysql_mode" json:"mysql_mode"`
-	AdminListen     string `yaml:"admin_listen" json:"admin_listen"`
-	AdminTokenEnv   string `yaml:"admin_token_env" json:"admin_token_env"`
-	ShutdownTimeout string `yaml:"shutdown_timeout" json:"shutdown_timeout"`
-	DataDir         string `yaml:"data_dir" json:"data_dir"`
+	MySQLListen            string `yaml:"mysql_listen" json:"mysql_listen"`
+	MySQLMode              string `yaml:"mysql_mode" json:"mysql_mode"`
+	MySQLClientUser        string `yaml:"mysql_client_user" json:"mysql_client_user"`
+	MySQLClientPasswordEnv string `yaml:"mysql_client_password_env" json:"mysql_client_password_env"`
+	MySQLAllowInsecureNet  bool   `yaml:"mysql_allow_insecure_network" json:"mysql_allow_insecure_network"`
+	MySQLTLSMode           string `yaml:"mysql_tls_mode" json:"mysql_tls_mode"`
+	MySQLTLSCertFile       string `yaml:"mysql_tls_cert_file" json:"mysql_tls_cert_file"`
+	MySQLTLSKeyFile        string `yaml:"mysql_tls_key_file" json:"mysql_tls_key_file"`
+	AdminListen            string `yaml:"admin_listen" json:"admin_listen"`
+	AdminTokenEnv          string `yaml:"admin_token_env" json:"admin_token_env"`
+	ShutdownTimeout        string `yaml:"shutdown_timeout" json:"shutdown_timeout"`
+	DataDir                string `yaml:"data_dir" json:"data_dir"`
 }
 
 type UpstreamConfig struct {
@@ -88,11 +94,14 @@ func Default() Config {
 	return Config{
 		Version: CurrentVersion,
 		Server: ServerConfig{
-			MySQLListen:     "127.0.0.1:3307",
-			MySQLMode:       "transparent",
-			AdminListen:     "127.0.0.1:9090",
-			ShutdownTimeout: "15s",
-			DataDir:         "./data",
+			MySQLListen:            "127.0.0.1:3307",
+			MySQLMode:              "transparent",
+			MySQLClientUser:        "accelerator",
+			MySQLClientPasswordEnv: "DBA_CLIENT_PASSWORD",
+			MySQLTLSMode:           "disabled",
+			AdminListen:            "127.0.0.1:9090",
+			ShutdownTimeout:        "15s",
+			DataDir:                "./data",
 		},
 		Upstream: UpstreamConfig{
 			Enabled:        false,
@@ -159,6 +168,12 @@ func Load(options LoadOptions) (Config, error) {
 	if cfg.Upstream.TLSCAFile != "" && !filepath.IsAbs(cfg.Upstream.TLSCAFile) {
 		cfg.Upstream.TLSCAFile = filepath.Clean(filepath.Join(baseDir, cfg.Upstream.TLSCAFile))
 	}
+	if cfg.Server.MySQLTLSCertFile != "" && !filepath.IsAbs(cfg.Server.MySQLTLSCertFile) {
+		cfg.Server.MySQLTLSCertFile = filepath.Clean(filepath.Join(baseDir, cfg.Server.MySQLTLSCertFile))
+	}
+	if cfg.Server.MySQLTLSKeyFile != "" && !filepath.IsAbs(cfg.Server.MySQLTLSKeyFile) {
+		cfg.Server.MySQLTLSKeyFile = filepath.Clean(filepath.Join(baseDir, cfg.Server.MySQLTLSKeyFile))
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -205,6 +220,11 @@ func applyOverrides(cfg *Config, overrides Overrides) {
 func applyEnvironment(cfg *Config, lookup func(string) (string, bool)) error {
 	setString(lookup, "DBA_MYSQL_LISTEN", &cfg.Server.MySQLListen)
 	setString(lookup, "DBA_MYSQL_MODE", &cfg.Server.MySQLMode)
+	setString(lookup, "DBA_MYSQL_CLIENT_USER", &cfg.Server.MySQLClientUser)
+	setString(lookup, "DBA_MYSQL_CLIENT_PASSWORD_ENV", &cfg.Server.MySQLClientPasswordEnv)
+	setString(lookup, "DBA_MYSQL_TLS_MODE", &cfg.Server.MySQLTLSMode)
+	setString(lookup, "DBA_MYSQL_TLS_CERT_FILE", &cfg.Server.MySQLTLSCertFile)
+	setString(lookup, "DBA_MYSQL_TLS_KEY_FILE", &cfg.Server.MySQLTLSKeyFile)
 	setString(lookup, "DBA_ADMIN_LISTEN", &cfg.Server.AdminListen)
 	setString(lookup, "DBA_ADMIN_TOKEN_ENV", &cfg.Server.AdminTokenEnv)
 	setString(lookup, "DBA_SHUTDOWN_TIMEOUT", &cfg.Server.ShutdownTimeout)
@@ -223,6 +243,9 @@ func applyEnvironment(cfg *Config, lookup func(string) (string, bool)) error {
 	setString(lookup, "DBA_UPSTREAM_HEALTH_TIMEOUT", &cfg.Upstream.HealthTimeout)
 
 	if err := setBool(lookup, "DBA_UPSTREAM_ENABLED", &cfg.Upstream.Enabled); err != nil {
+		return err
+	}
+	if err := setBool(lookup, "DBA_MYSQL_ALLOW_INSECURE_NETWORK", &cfg.Server.MySQLAllowInsecureNet); err != nil {
 		return err
 	}
 	if err := setBool(lookup, "DBA_UPSTREAM_ALLOW_EMPTY_PASSWORD", &cfg.Upstream.AllowEmptyPassword); err != nil {
@@ -295,6 +318,23 @@ func (c Config) Validate() error {
 	if !oneOf(strings.ToLower(c.Server.MySQLMode), "transparent", "pooled") {
 		problems = append(problems, "server.mysql_mode must be transparent or pooled")
 	}
+	if strings.EqualFold(c.Server.MySQLMode, "pooled") {
+		if strings.TrimSpace(c.Server.MySQLClientUser) == "" {
+			problems = append(problems, "server.mysql_client_user must not be empty in pooled mode")
+		}
+		if strings.TrimSpace(c.Server.MySQLClientPasswordEnv) == "" {
+			problems = append(problems, "server.mysql_client_password_env must not be empty in pooled mode")
+		}
+		if !oneOf(strings.ToLower(c.Server.MySQLTLSMode), "disabled", "required") {
+			problems = append(problems, "server.mysql_tls_mode must be disabled or required")
+		}
+		if strings.EqualFold(c.Server.MySQLTLSMode, "required") && (strings.TrimSpace(c.Server.MySQLTLSCertFile) == "" || strings.TrimSpace(c.Server.MySQLTLSKeyFile) == "") {
+			problems = append(problems, "server.mysql_tls_cert_file and mysql_tls_key_file are required when client TLS is required")
+		}
+		if !c.Server.MySQLAllowInsecureNet && !isLoopbackAddress(c.Server.MySQLListen) && !strings.EqualFold(c.Server.MySQLTLSMode, "required") {
+			problems = append(problems, "server.mysql_listen must use loopback in pooled mode until client TLS is enabled; set mysql_allow_insecure_network only for an explicitly protected private boundary")
+		}
+	}
 	if err := validateAddress(c.Server.AdminListen); err != nil {
 		problems = append(problems, "server.admin_listen: "+err.Error())
 	}
@@ -359,6 +399,18 @@ func (c Config) Validate() error {
 		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
+}
+
+func isLoopbackAddress(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateAddress(address string) error {

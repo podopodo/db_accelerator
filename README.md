@@ -28,19 +28,19 @@ The current build has two explicit SQL listener modes:
 
 Pooled mode has been exercised with the unmodified MariaDB command-line client and Go MySQL driver against MariaDB 11.7.2. The integration gate covers real DDL, inserts, reads, commit, rollback, and 64 concurrent logical clients sharing one upstream connection. This proves 64:1 connection fan-in for that small autocommit test lane; it is not a 64x query-throughput or production compatibility claim.
 
-The single binary also embeds a responsive five-view operations console and live read-only status API. It reports upstream health, server metadata, gateway traffic, connection pressure and history, measured benchmark evidence, build identity, configured guardrails, and the exact acceleration capability currently enabled. The interface embeds its fonts and operational assets and needs no runtime CDN. The control plane supports token login, an HTTP-only same-site session cookie, logout, and basic login throttling. Role-based authorization, prepared statements, client TLS, multiple database identities, caching, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
+The single binary also embeds a responsive five-view operations console and live read-only status API. It reports upstream health, server metadata, gateway traffic, connection pressure and history, measured benchmark evidence, build identity, configured guardrails, and the exact acceleration capability currently enabled. The interface embeds its fonts and operational assets and needs no runtime CDN. The control plane supports token login, an HTTP-only same-site session cookie, logout, and basic login throttling. Role-based authorization, prepared statements, multiple database identities, caching, and production hardening are not complete. See the [delivery ledger](plans/STATUS.md) and [versioned execution plan](plans/README.md) for the full roadmap.
 
 ### Measured local evidence
 
-An isolated benchmark against the connected MariaDB 11.7.2 server measured 64 logical clients through 8 upstream connections: **87.5% fewer physical connections**, **8.0x fan-in**, and **zero errors across 9,000 measured operations**. This is the connection-capacity win the product targets.
+Isolated benchmarks against MariaDB 11.7.2 and Oracle MySQL 8.4.10 each measured 64 logical clients through 8 upstream connections: **87.5% fewer physical connections**, **8.0x fan-in**, and **zero errors**. This is the connection-capacity win the product targets.
 
-The same run also showed the current cost honestly: direct local point reads delivered higher throughput, while the accelerator recorded 82.45% lower throughput and 40.07% worse p95 latency. No cache was involved. Results apply only to that machine and workload. See the [raw report](docs/benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json) and [benchmark method](docs/BENCHMARKING.md).
+All four reproducibility runs also showed the current cost honestly: direct local point reads delivered higher throughput and lower p95 latency. No cache was involved. Results apply only to the recorded machines and workloads. See the [raw reports and benchmark method](docs/BENCHMARKING.md).
 
 ### Pooled-mode safety boundary
 
 Pooled mode currently accepts `COM_QUERY`, `COM_PING`, `COM_INIT_DB`, and `COM_QUIT`. It supports conservative single-statement text reads and writes, `BEGIN`/`START TRANSACTION`, `COMMIT`, `ROLLBACK`, savepoints, `SET AUTOCOMMIT`, `SET NAMES`, and `USE` for the configured database. It refuses multi-statements, prepared-statement commands, unknown state-changing `SET` statements, stored procedure calls, temporary objects, locks, local file loading, and other unproven behavior. A refused command is not silently sent through a different session.
 
-Pooled mode currently authenticates one configured database identity with `mysql_native_password`. Keep the SQL listener on loopback or a trusted private network: client-to-accelerator TLS is not implemented. Upstream TLS remains separately configurable.
+Pooled mode authenticates one accelerator-side client identity with `mysql_native_password`, then maps it to the separately configured upstream database identity. The client and upstream passwords are distinct secret references. Client transport can require TLS 1.2+ with a reloadable certificate; plaintext mode is limited to loopback unless an explicit protected-network override is set. Upstream TLS remains separately configurable.
 
 ## Intended shape
 
@@ -98,9 +98,10 @@ accelerator healthcheck --url http://127.0.0.1:9090/readyz
 After `serve` starts:
 
 - Point a MySQL/MariaDB client at `server.mysql_listen`.
+- Use `server.mysql_client_user` and the password referenced by `server.mysql_client_password_env`; do not give applications the upstream database password.
 - Open `http://server.admin_listen/` in a browser for the dashboard.
 - Set the environment variable referenced by `server.admin_token_env`, then use that token on the dashboard login screen.
-- Keep both listeners on loopback or a trusted private network. Admin HTTP transport TLS is not implemented yet.
+- Keep the admin listener on loopback or a trusted private network. Require SQL-client TLS before exposing the SQL listener beyond that boundary. Admin HTTP transport TLS is not implemented yet.
 
 Local Laragon example:
 
@@ -108,6 +109,11 @@ Local Laragon example:
 server:
   mysql_listen: 127.0.0.1:13307
   mysql_mode: pooled
+  mysql_client_user: accelerator
+  mysql_client_password_env: DBA_CLIENT_PASSWORD
+  mysql_tls_mode: disabled
+  mysql_tls_cert_file: ""
+  mysql_tls_key_file: ""
   admin_listen: 127.0.0.1:19090
   admin_token_env: DBA_ADMIN_TOKEN
 upstream:
@@ -119,7 +125,7 @@ upstream:
   tls_mode: disabled
 ```
 
-Start from [`accelerator.example.yaml`](accelerator.example.yaml). Secrets are referenced through environment variables. An intentionally passwordless local account requires the explicit `allow_empty_password: true` setting; it is off by default.
+Start from [`accelerator.example.yaml`](accelerator.example.yaml). Set `DBA_CLIENT_PASSWORD` to a separate value of at least 12 characters for applications. Upstream secrets use their own reference. An intentionally passwordless local database account still requires `allow_empty_password: true`; the accelerator-side client password cannot be empty.
 
 For local development, use a long random admin token. For example, set `DBA_ADMIN_TOKEN` in the process environment before `serve`. The token is compared in constant time and exchanged for an eight-hour HTTP-only, SameSite=Strict cookie; it is not written to browser storage.
 
@@ -128,7 +134,7 @@ For local development, use a long random admin token. For example, set `DBA_ADMI
 The repository includes a multi-stage `Dockerfile` and `compose.yaml`. Compose runs the process as a non-root user, drops Linux capabilities, mounts credentials as secret files, persists runtime evidence, and checks `/readyz`.
 
 ```text
-# First create .secrets/admin_token and .secrets/upstream_password
+# First create .secrets/admin_token, .secrets/client_password, and .secrets/upstream_password
 docker compose up --build -d
 ```
 

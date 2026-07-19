@@ -118,6 +118,10 @@ func (h *Handshake) SendGreeting(client *Client) error {
 // ReadResponse reads the first client handshake response. TLS upgrade is
 // recognized but completed by the later TLS/authentication task.
 func (h *Handshake) ReadResponse(client *Client) (HandshakeResponse, error) {
+	return h.ReadResponseSequence(client, 1)
+}
+
+func (h *Handshake) ReadResponseSequence(client *Client, expected uint8) (HandshakeResponse, error) {
 	if client == nil {
 		return HandshakeResponse{}, errors.New("mysql client is required")
 	}
@@ -125,8 +129,8 @@ func (h *Handshake) ReadResponse(client *Client) (HandshakeResponse, error) {
 	if err != nil {
 		return HandshakeResponse{}, err
 	}
-	if message.Sequence != 1 {
-		return HandshakeResponse{}, fmt.Errorf("%w: handshake got %d want 1", ErrSequence, message.Sequence)
+	if message.Sequence != expected {
+		return HandshakeResponse{}, fmt.Errorf("%w: handshake got %d want %d", ErrSequence, message.Sequence, expected)
 	}
 	return h.ParseResponse(message.Payload)
 }

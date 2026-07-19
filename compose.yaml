@@ -19,10 +19,13 @@ services:
       DBA_UPSTREAM_DATABASE: ${DBA_UPSTREAM_DATABASE:-app}
       DBA_UPSTREAM_TLS_MODE: ${DBA_UPSTREAM_TLS_MODE:-preferred}
       DBA_UPSTREAM_ALLOW_EMPTY_PASSWORD: ${DBA_UPSTREAM_ALLOW_EMPTY_PASSWORD:-false}
+      DBA_MYSQL_CLIENT_USER: ${DBA_MYSQL_CLIENT_USER:-accelerator}
       DBA_ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      DBA_CLIENT_PASSWORD_FILE: /run/secrets/client_password
       DBA_UPSTREAM_PASSWORD_FILE: /run/secrets/upstream_password
     secrets:
       - admin_token
+      - client_password
       - upstream_password
     volumes:
       - accelerator-data:/var/lib/database-accelerator
@@ -39,6 +42,8 @@ services:
 secrets:
   admin_token:
     file: ./.secrets/admin_token
+  client_password:
+    file: ./.secrets/client_password
   upstream_password:
     file: ./.secrets/upstream_password
 

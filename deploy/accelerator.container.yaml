@@ -3,6 +3,12 @@ version: 1
 server:
   mysql_listen: 0.0.0.0:3307
   mysql_mode: pooled
+  mysql_client_user: accelerator
+  mysql_client_password_env: DBA_CLIENT_PASSWORD
+  mysql_allow_insecure_network: true
+  mysql_tls_mode: disabled
+  mysql_tls_cert_file: ""
+  mysql_tls_key_file: ""
   admin_listen: 0.0.0.0:9090
   admin_token_env: DBA_ADMIN_TOKEN
   shutdown_timeout: 15s

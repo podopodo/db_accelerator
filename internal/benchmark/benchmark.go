@@ -364,8 +364,8 @@ func openGatewayClients(ctx context.Context, cfg config.Config, secrets config.S
 	databases := make([]*sql.DB, count)
 	for index := range databases {
 		client := driver.NewConfig()
-		client.User = cfg.Upstream.User
-		client.Passwd = secrets.UpstreamPassword.Reveal()
+		client.User = cfg.Server.MySQLClientUser
+		client.Passwd = secrets.ClientPassword.Reveal()
 		client.Net = "tcp"
 		client.Addr = address
 		client.DBName = cfg.Upstream.Database

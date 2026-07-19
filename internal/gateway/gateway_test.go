@@ -76,9 +76,11 @@ func TestAcquireRejectsQueuedByteOverflow(t *testing.T) {
 func TestMySQLColumnTypeMapping(t *testing.T) {
 	tests := map[string]byte{
 		"BIGINT UNSIGNED": protocol.ColumnTypeLongLong,
+		"UNSIGNED BIGINT": protocol.ColumnTypeLongLong,
 		"DECIMAL":         protocol.ColumnTypeNewDecimal,
 		"DATETIME":        protocol.ColumnTypeDateTime,
 		"VARBINARY":       protocol.ColumnTypeBlob,
+		"LONGTEXT":        protocol.ColumnTypeBlob,
 		"JSON":            protocol.ColumnTypeJSON,
 		"unknown":         protocol.ColumnTypeVarString,
 	}
@@ -117,5 +119,61 @@ func TestMySQLErrorMapsGatewayFailures(t *testing.T) {
 	code, state, _ = mysqlError(context.DeadlineExceeded)
 	if code != 3024 || state != "HY000" {
 		t.Fatalf("deadline mapped as code=%d state=%q", code, state)
+	}
+}
+
+func TestAuthenticationLimiterLocksExpiresAndClears(t *testing.T) {
+	now := time.Date(2026, time.July, 19, 0, 0, 0, 0, time.UTC)
+	limiter := newAuthLimiter()
+	limiter.now = func() time.Time { return now }
+	remote := "192.0.2.10:12345"
+	for attempt := 0; attempt < limiter.maxFailures; attempt++ {
+		if !limiter.allowed(remote) {
+			t.Fatalf("attempt %d locked early", attempt)
+		}
+		limiter.failure(remote)
+	}
+	if limiter.allowed("192.0.2.10:54321") {
+		t.Fatal("source address was not locked across source ports")
+	}
+	now = now.Add(limiter.lockout + time.Second)
+	if !limiter.allowed(remote) {
+		t.Fatal("lockout did not expire")
+	}
+	limiter.failure(remote)
+	limiter.success(remote)
+	if !limiter.allowed(remote) {
+		t.Fatal("successful authentication did not clear failures")
+	}
+}
+
+func TestAuthenticationLimiterBoundsSourceInventory(t *testing.T) {
+	limiter := newAuthLimiter()
+	limiter.maxEntries = 2
+	limiter.failure("192.0.2.1:1")
+	limiter.failure("192.0.2.2:2")
+	limiter.failure("192.0.2.3:3")
+	if len(limiter.attempts) != 2 {
+		t.Fatalf("attempt inventory size=%d", len(limiter.attempts))
+	}
+}
+
+func TestPermissionIdentitySeparatesFuturePools(t *testing.T) {
+	base := config.Default()
+	base.Server.MySQLMode = "pooled"
+	first := newPermissionIdentity(base)
+	mutations := []func(*config.Config){
+		func(cfg *config.Config) { cfg.Server.MySQLClientUser = "another-client" },
+		func(cfg *config.Config) { cfg.Upstream.User = "another-upstream" },
+		func(cfg *config.Config) { cfg.Upstream.Database = "another_database" },
+		func(cfg *config.Config) { cfg.Upstream.TLSMode = "verify-full" },
+		func(cfg *config.Config) { cfg.Server.MySQLTLSMode = "required" },
+	}
+	for index, mutate := range mutations {
+		changed := base
+		mutate(&changed)
+		if first == newPermissionIdentity(changed) {
+			t.Fatalf("mutation %d did not change permission identity", index)
+		}
 	}
 }

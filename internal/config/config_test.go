@@ -131,6 +131,19 @@ func TestValidateRejectsUnsafeUpstreamLimits(t *testing.T) {
 	}
 }
 
+func TestPooledListenerRequiresExplicitPrivateBoundaryOptIn(t *testing.T) {
+	cfg := Default()
+	cfg.Server.MySQLMode = "pooled"
+	cfg.Server.MySQLListen = "0.0.0.0:3307"
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "mysql_allow_insecure_network") {
+		t.Fatalf("public pooled listener error = %v", err)
+	}
+	cfg.Server.MySQLAllowInsecureNet = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("explicit private-boundary opt-in: %v", err)
+	}
+}
+
 func TestSecretCannotBeFormattedOrMarshaled(t *testing.T) {
 	cfg := Default()
 	cfg.Upstream.Enabled = true
@@ -182,6 +195,37 @@ func TestAdminTokenRejectsMissingOrShortValue(t *testing.T) {
 	}
 	if _, err := ResolveSecrets(cfg, func(string) (string, bool) { return "too-short", true }); err == nil {
 		t.Fatal("short admin token was accepted")
+	}
+}
+
+func TestPooledClientCredentialIsSeparateAndRedacted(t *testing.T) {
+	cfg := Default()
+	cfg.Server.MySQLMode = "pooled"
+	cfg.Upstream.Enabled = true
+	secrets, err := ResolveSecrets(cfg, func(name string) (string, bool) {
+		switch name {
+		case cfg.Server.MySQLClientPasswordEnv:
+			return "client-secret-canary", true
+		case cfg.Upstream.PasswordEnv:
+			return "upstream-secret-canary", true
+		default:
+			return "", false
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets.ClientPassword.Reveal() != "client-secret-canary" || secrets.UpstreamPassword.Reveal() != "upstream-secret-canary" {
+		t.Fatal("separate credentials were not resolved")
+	}
+	formatted := fmt.Sprintf("%+v", secrets)
+	if strings.Contains(formatted, "client-secret-canary") || strings.Contains(formatted, "upstream-secret-canary") {
+		t.Fatalf("credentials leaked through formatting: %s", formatted)
+	}
+	if _, err := ResolveSecrets(cfg, func(name string) (string, bool) {
+		return "upstream-secret-canary", name == cfg.Upstream.PasswordEnv
+	}); err == nil || !strings.Contains(err.Error(), cfg.Server.MySQLClientPasswordEnv) {
+		t.Fatalf("missing client credential error = %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package mysql
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net"
 	"sync"
@@ -213,6 +214,27 @@ func (c *Client) WriteMessage(sequence uint8, payload []byte) (uint8, error) {
 		return sequence, err
 	}
 	return c.codec.WriteMessage(c.connection, sequence, payload)
+}
+
+// UpgradeTLS completes a server-side TLS handshake and replaces the transport
+// used by subsequent MySQL packets. It is valid only during the serialized
+// protocol handshake, before command processing starts.
+func (c *Client) UpgradeTLS(ctx context.Context, config *tls.Config) error {
+	if config == nil {
+		return errors.New("mysql client TLS configuration is required")
+	}
+	if err := c.connection.SetDeadline(time.Now().Add(c.idleTimeout)); err != nil {
+		return err
+	}
+	secure := tls.Server(c.connection, config)
+	if err := secure.HandshakeContext(ctx); err != nil {
+		return err
+	}
+	if err := secure.SetDeadline(time.Time{}); err != nil {
+		return err
+	}
+	c.connection = secure
+	return nil
 }
 
 func (c *Client) Close() error { return c.connection.Close() }

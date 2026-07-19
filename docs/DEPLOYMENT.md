@@ -8,10 +8,11 @@ Create local secret files:
 
 ```text
 .secrets/admin_token
+.secrets/client_password
 .secrets/upstream_password
 ```
 
-The admin token must contain at least 16 characters. Files under `.secrets/` are ignored by Git.
+The admin token must contain at least 16 characters. The accelerator-side client password must contain at least 12 characters and must differ from the upstream password. Files under `.secrets/` are ignored by Git.
 
 Set non-secret connection values in your shell or a local `.env` file, then start:
 
@@ -20,6 +21,7 @@ DBA_UPSTREAM_HOST=host.docker.internal
 DBA_UPSTREAM_PORT=3306
 DBA_UPSTREAM_USER=accelerator
 DBA_UPSTREAM_DATABASE=app
+DBA_MYSQL_CLIENT_USER=accelerator
 docker compose up --build -d
 ```
 
@@ -37,11 +39,12 @@ For an intentional passwordless local MariaDB account, leave `.secrets/upstream_
 - Runs as UID/GID 10001, not root.
 - Uses a read-only root filesystem, drops all Linux capabilities, and enables `no-new-privileges` in Compose.
 - Reads credentials from Compose secret mounts through `NAME_FILE` variables.
+- Keeps the application-facing client credential separate from the upstream database credential.
 - Keeps runtime state in a named volume.
 - Uses the binary's `/readyz` probe for container health.
 - Includes CA certificates for upstream TLS.
 
-The SQL listener does not provide client-to-accelerator TLS yet. Use loopback, a trusted private network, or an authenticated encrypted tunnel. The admin listener is HTTP with token authentication; do not expose it directly to the public internet.
+For client-to-accelerator encryption, set `server.mysql_tls_mode: required`, mount a PEM certificate and private key, and set `mysql_tls_cert_file` plus `mysql_tls_key_file`. New handshakes reload the files, expired/not-yet-valid certificates fail closed, and certificate expiry appears in runtime diagnostics. Without required TLS, use loopback or set `mysql_allow_insecure_network: true` only when the container/host boundary is explicitly protected. The admin listener is HTTP with token authentication; do not expose it directly to the public internet.
 
 ## Build image directly
 

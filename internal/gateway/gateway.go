@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -33,13 +34,17 @@ const maxErrorMessageBytes = 2048
 var errQueueFull = errors.New("accelerator request queue is full")
 
 type Service struct {
-	cfg       config.Config
-	secrets   config.Secrets
-	database  *sql.DB
-	logger    *slog.Logger
-	server    *protocol.Server
-	admission chan struct{}
-	queue     chan struct{}
+	cfg               config.Config
+	database          *sql.DB
+	logger            *slog.Logger
+	server            *protocol.Server
+	auth              *authLimiter
+	clientTLS         *tls.Config
+	clientCertificate *clientCertificateStore
+	clientVerifier    []byte
+	permission        permissionIdentity
+	admission         chan struct{}
+	queue             chan struct{}
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -58,6 +63,10 @@ func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connecto
 	if connector == nil {
 		return nil, errors.New("pooled gateway requires an upstream connector")
 	}
+	clientTLS, clientCertificate, err := newClientTLS(cfg.Server)
+	if err != nil {
+		return nil, err
+	}
 	database, err := connector.OpenPool(cfg.Limits.MaxUpstreamConnections)
 	if err != nil {
 		return nil, err
@@ -66,13 +75,17 @@ func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connecto
 		logger = slog.Default()
 	}
 	service := &Service{
-		cfg:       cfg,
-		secrets:   secrets,
-		database:  database,
-		logger:    logger,
-		admission: make(chan struct{}, cfg.Limits.MaxUpstreamConnections),
-		queue:     make(chan struct{}, cfg.Limits.MaxQueuedRequests),
-		done:      make(chan error, 1),
+		cfg:               cfg,
+		database:          database,
+		logger:            logger,
+		auth:              newAuthLimiter(),
+		clientTLS:         clientTLS,
+		clientCertificate: clientCertificate,
+		clientVerifier:    protocol.NativePasswordVerifier(secrets.ClientPassword.Reveal()),
+		permission:        newPermissionIdentity(cfg),
+		admission:         make(chan struct{}, cfg.Limits.MaxUpstreamConnections),
+		queue:             make(chan struct{}, cfg.Limits.MaxQueuedRequests),
+		done:              make(chan error, 1),
 	}
 	server, err := protocol.NewServer(protocol.ListenerConfig{
 		MaxConnections:  cfg.Limits.MaxLogicalConnections,
@@ -156,6 +169,8 @@ func (s *Service) Snapshot() relay.Snapshot {
 		ClientToDBBytes:   s.clientBytes.Load(),
 		DBToClientBytes:   s.databaseBytes.Load(),
 		MaxConnections:    s.cfg.Limits.MaxUpstreamConnections,
+		ClientTLSMode:     s.cfg.Server.MySQLTLSMode,
+		ClientTLSExpires:  s.clientCertificate.expiry(),
 	}
 }
 
@@ -174,6 +189,11 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 		protocol.ClientSessionTrack |
 		protocol.ClientMultiResults |
 		protocol.ClientPSMultiResults
+	if s.clientTLS != nil {
+		handshakeConfig.Capabilities |= protocol.ClientSSL
+	} else {
+		handshakeConfig.Capabilities &^= protocol.ClientSSL
+	}
 	handshake, err := protocol.NewHandshake(handshakeConfig)
 	if err != nil {
 		return err
@@ -186,11 +206,35 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 		_ = writeError(client, 2, 1043, "08S01", "invalid handshake response")
 		return err
 	}
+	remoteAddress := client.Info().RemoteAddr
+	authSequence := uint8(2)
+	if response.WantsTLS {
+		if s.clientTLS == nil {
+			return errors.New("client requested unavailable TLS")
+		}
+		if err := client.UpgradeTLS(ctx, s.clientTLS); err != nil {
+			return fmt.Errorf("upgrade client TLS: %w", err)
+		}
+		response, err = handshake.ReadResponseSequence(client, 2)
+		if err != nil {
+			return err
+		}
+		authSequence = 3
+	} else if s.clientTLS != nil {
+		_ = writeError(client, authSequence, 3159, "HY000", "secure transport required by Database Accelerator")
+		return errors.New("client TLS is required")
+	}
+	if !s.auth.allowed(remoteAddress) {
+		_ = writeError(client, authSequence, 1045, "28000", "access denied by Database Accelerator")
+		return errors.New("client authentication temporarily locked")
+	}
 	if err := s.authenticate(response, handshake.Seed()); err != nil {
-		_ = writeError(client, 2, 1045, "28000", "access denied by Database Accelerator")
+		s.auth.failure(remoteAddress)
+		_ = writeError(client, authSequence, 1045, "28000", "access denied by Database Accelerator")
 		return err
 	}
-	if _, err := client.WriteMessage(2, protocol.OKPayload(0, 0, protocol.ServerStatusAutocommit, 0)); err != nil {
+	s.auth.success(remoteAddress)
+	if _, err := client.WriteMessage(authSequence, protocol.OKPayload(0, 0, protocol.ServerStatusAutocommit, 0)); err != nil {
 		return err
 	}
 
@@ -225,11 +269,8 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 }
 
 func (s *Service) authenticate(response protocol.HandshakeResponse, seed []byte) error {
-	if response.WantsTLS {
-		return errors.New("client TLS is not enabled")
-	}
-	if response.Username != s.cfg.Upstream.User {
-		return errors.New("client user does not match configured upstream identity")
+	if response.Username != s.permission.ClientUser {
+		return errors.New("client user does not match configured accelerator identity")
 	}
 	if response.AuthPlugin != protocol.NativePasswordPlugin {
 		return errors.New("unsupported client authentication plugin")
@@ -237,8 +278,8 @@ func (s *Service) authenticate(response protocol.HandshakeResponse, seed []byte)
 	if response.Database != "" && response.Database != s.cfg.Upstream.Database {
 		return errors.New("client database does not match configured upstream database")
 	}
-	if !protocol.NativePasswordMatches(response.AuthResponse, s.secrets.UpstreamPassword.Reveal(), seed) {
-		return errors.New("client password did not match configured upstream identity")
+	if !protocol.NativePasswordVerifierMatches(response.AuthResponse, s.clientVerifier, seed) {
+		return errors.New("client password did not match configured accelerator identity")
 	}
 	return nil
 }
@@ -667,7 +708,8 @@ func columnDefinition(name, database string, column *sql.ColumnType) protocol.Co
 			definition.Length = uint32(min(wireLength, int64(math.MaxUint32)))
 		}
 	}
-	if definition.Type == protocol.ColumnTypeBlob || definition.Type == protocol.ColumnTypeTinyBlob || definition.Type == protocol.ColumnTypeMediumBlob || definition.Type == protocol.ColumnTypeLongBlob || definition.Type == protocol.ColumnTypeGeometry || definition.Type == protocol.ColumnTypeBit {
+	isText := strings.Contains(databaseType, "TEXT")
+	if !isText && (definition.Type == protocol.ColumnTypeBlob || definition.Type == protocol.ColumnTypeTinyBlob || definition.Type == protocol.ColumnTypeMediumBlob || definition.Type == protocol.ColumnTypeLongBlob || definition.Type == protocol.ColumnTypeGeometry || definition.Type == protocol.ColumnTypeBit) {
 		definition.Charset = 63
 		definition.Flags |= protocol.ColumnFlagBinary
 	}
@@ -675,7 +717,7 @@ func columnDefinition(name, database string, column *sql.ColumnType) protocol.Co
 }
 
 func mysqlColumnType(name string) byte {
-	base := strings.TrimSpace(strings.TrimSuffix(name, " UNSIGNED"))
+	base := strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(name, " UNSIGNED"), "UNSIGNED "))
 	switch base {
 	case "TINYINT", "BOOL", "BOOLEAN":
 		return protocol.ColumnTypeTiny
@@ -717,6 +759,8 @@ func mysqlColumnType(name string) byte {
 		return protocol.ColumnTypeMediumBlob
 	case "LONGBLOB":
 		return protocol.ColumnTypeLongBlob
+	case "TINYTEXT", "TEXT", "MEDIUMTEXT", "LONGTEXT":
+		return protocol.ColumnTypeBlob
 	case "BLOB", "BINARY", "VARBINARY":
 		return protocol.ColumnTypeBlob
 	case "CHAR":

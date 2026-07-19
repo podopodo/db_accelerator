@@ -45,7 +45,14 @@ func TestNativePassword(t *testing.T) {
 	if len(token) != 20 || !NativePasswordMatches(token, "secret", seed) {
 		t.Fatal("valid native password did not match")
 	}
+	verifier := NativePasswordVerifier("secret")
+	if len(verifier) != 20 || !NativePasswordVerifierMatches(token, verifier, seed) {
+		t.Fatal("valid native password verifier did not match")
+	}
 	if NativePasswordMatches(token, "wrong", seed) || !NativePasswordMatches(nil, "", seed) {
 		t.Fatal("native password validation accepted an invalid response")
+	}
+	if NativePasswordVerifierMatches(token, NativePasswordVerifier("wrong"), seed) {
+		t.Fatal("native password verifier accepted an invalid response")
 	}
 }

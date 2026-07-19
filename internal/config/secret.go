@@ -28,6 +28,7 @@ func (s Secret) Reveal() string { return s.value }
 // Secrets are resolved independently from printable Config.
 type Secrets struct {
 	UpstreamPassword Secret
+	ClientPassword   Secret
 	AdminToken       Secret
 }
 
@@ -37,7 +38,8 @@ func (s Secrets) GoString() string { return redacted }
 // ResolveSecrets reads configured secret references without placing their
 // values in the printable Config tree.
 func ResolveSecrets(cfg Config, lookup func(string) (string, bool)) (Secrets, error) {
-	if lookup == nil && (cfg.Upstream.Enabled || strings.TrimSpace(cfg.Server.AdminTokenEnv) != "") {
+	clientAuthentication := strings.EqualFold(cfg.Server.MySQLMode, "pooled")
+	if lookup == nil && (cfg.Upstream.Enabled || clientAuthentication || strings.TrimSpace(cfg.Server.AdminTokenEnv) != "") {
 		return Secrets{}, errors.New("secret lookup is required")
 	}
 	var secrets Secrets
@@ -50,6 +52,17 @@ func ResolveSecrets(cfg Config, lookup func(string) (string, bool)) (Secrets, er
 			return Secrets{}, fmt.Errorf("required admin token environment %s must contain at least 16 characters", name)
 		}
 		secrets.AdminToken = Secret{value: value}
+	}
+	if clientAuthentication {
+		name := strings.TrimSpace(cfg.Server.MySQLClientPasswordEnv)
+		value, ok := lookup(name)
+		if !ok || value == "" {
+			return Secrets{}, fmt.Errorf("required client password environment %s is not set or empty", name)
+		}
+		if len(value) < 12 {
+			return Secrets{}, fmt.Errorf("required client password environment %s must contain at least 12 characters", name)
+		}
+		secrets.ClientPassword = Secret{value: value}
 	}
 	if !cfg.Upstream.Enabled {
 		return secrets, nil
