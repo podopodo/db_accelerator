@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "run_id": "20260719T065644Z-4b096a79",
+  "started_at": "2026-07-19T06:56:44.7198101Z",
+  "completed_at": "2026-07-19T06:56:45.1772066Z",
+  "confidence": "local-measured-experimental",
+  "environment": {
+    "server_product": "mariadb",
+    "server_version": "11.7.2-MariaDB-log",
+    "address": "127.0.0.1:3307",
+    "os": "windows",
+    "arch": "amd64",
+    "logical_cpus": 20,
+    "cpu_profile": "windows/amd64; 20 logical CPUs",
+    "driver": "github.com/go-sql-driver/mysql",
+    "driver_version": "v1.9.3",
+    "accelerator_version": "0.0.5-dev",
+    "accelerator_commit": "workspace-baseline",
+    "server_settings": {
+      "max_connections": 151,
+      "innodb_buffer_pool_bytes": 134217728,
+      "character_set": "utf8mb4",
+      "collation": "utf8mb4_uca1400_ai_ci",
+      "sql_mode": "STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION",
+      "binlog_format": "MIXED"
+    },
+    "server_config_digest": "0786763cdd4c3f4a14183519a2311123929dc1fa3815fa08be7dc4f197774d02"
+  },
+  "workload": {
+    "name": "bounded-point-read-comparison",
+    "seed": 21188,
+    "open_clients": 64,
+    "active_concurrency": 8,
+    "operations_per_path": 3000,
+    "dataset_rows": 5000,
+    "payload_bytes": 128,
+    "dataset_estimated_bytes": 700000,
+    "dataset_digest": "28522b4dcdc17207ccf6737bfa9a0114c4ce3460c70631c574ea551fc4d0a312",
+    "storage_engine": "InnoDB temporary schema",
+    "network_path": "loopback TCP",
+    "direct_runs": 2,
+    "query_shape": "single-row primary-key SELECT; no cache; local TCP"
+  },
+  "direct": {
+    "client_ready_ms": 6.991,
+    "peak_database_connections": 64,
+    "operations": 3000,
+    "errors": 0,
+    "duration_ms": 47.96,
+    "throughput_per_second": 65027.982,
+    "p50_ms": 0,
+    "p95_ms": 0.535,
+    "p99_ms": 0.597,
+    "max_ms": 0.826,
+    "peak_heap_alloc_bytes": 3249960,
+    "peak_goroutines": 231
+  },
+  "accelerator": {
+    "client_ready_ms": 6.824,
+    "peak_database_connections": 8,
+    "operations": 3000,
+    "errors": 0,
+    "duration_ms": 291.4192,
+    "throughput_per_second": 10294.448684232199,
+    "p50_ms": 0.5396,
+    "p95_ms": 1.5704,
+    "p99_ms": 1.6847,
+    "max_ms": 2.1605,
+    "peak_heap_alloc_bytes": 1765520,
+    "peak_goroutines": 240
+  },
+  "gains": {
+    "connections_saved": 56,
+    "connection_reduction_percent": 87.5,
+    "fan_in_ratio": 8,
+    "client_ready_speedup": 1.02,
+    "throughput_change_percent": -84.17,
+    "p95_latency_change_percent": -193.53
+  },
+  "evidence": {
+    "measured": true,
+    "experimental": true,
+    "scope": "This machine, this database, this binary, and the recorded bounded workload only.",
+    "caveat": "Connection savings are the product claim. Throughput and latency may improve or regress; both are reported without filtering."
+  }
+}

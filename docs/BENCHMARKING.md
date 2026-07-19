@@ -32,6 +32,8 @@ accelerator benchmark --config accelerator.yaml \
 
 The default output is `<data_dir>/benchmark-latest.json`. The admin API reads this file. The Performance view updates from it automatically.
 
+Every report records the server identity and relevant settings, accelerator build, driver version, operating system, CPU profile, workload seed, dataset digest, storage engine, network path, heap-allocation peak, and goroutine peak. `server_config_digest` and `dataset_digest` make accidental run drift visible.
+
 ## Read the result
 
 - `connection_reduction_percent`, `connections_saved`, and `fan_in_ratio` are the primary product evidence.
@@ -41,9 +43,9 @@ The default output is `<data_dir>/benchmark-latest.json`. The admin API reads th
 
 Very short local reads can fall below the operating system timer resolution. The UI displays a recorded zero latency as `<0.001 ms`; it does not invent extra precision.
 
-## Recorded competition run
+## Recorded competition runs
 
-The repository includes the raw [MariaDB 11.7.2 Windows amd64 report](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json).
+The repository includes two reproducibility runs from the same MariaDB 11.7.2 Windows amd64 environment: [run A](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-a.json) and [run B](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64-run-b.json). The earlier [competition report](benchmarks/2026-07-19-mariadb-11.7.2-windows-amd64.json) remains available for history.
 
 - 64 logical clients.
 - 8 active workers.
@@ -51,6 +53,9 @@ The repository includes the raw [MariaDB 11.7.2 Windows amd64 report](benchmarks
 - 64 direct database connections versus 8 through the accelerator.
 - 87.5% fewer physical connections and 8.0x fan-in.
 - Zero errors across 9,000 measured operations.
-- Direct reads were faster: the accelerator recorded 82.45% lower throughput and 40.07% worse p95 latency in this local microbenchmark.
+- Both runs recorded the same server-config and dataset digests.
+- Direct throughput differed by 3.92%; accelerator throughput differed by 0.84%.
+- Direct reads were faster: the accelerator recorded 83.39% to 84.17% lower throughput and materially worse p95 latency in this local microbenchmark.
+- Cleanup verification found zero `dba_benchmark_%` schemas after both runs.
 
 That result supports connection consolidation. It does not support a query-throughput claim.

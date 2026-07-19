@@ -52,7 +52,7 @@ func TestDashboardQualityContractAssets(t *testing.T) {
 	css := readEmbedded(t, "assets/app.css")
 	script := readEmbedded(t, "assets/app.js")
 	combined := strings.ToLower(string(index) + string(css) + string(script))
-	if !strings.Contains(string(index), "/assets/app.css?v=4") || !strings.Contains(string(index), "/assets/app.js?v=4") {
+	if !strings.Contains(string(index), "/assets/app.css?v=5") || !strings.Contains(string(index), "/assets/app.js?v=5") {
 		t.Fatal("dashboard assets are missing their binary revision key")
 	}
 	for _, marker := range []string{"data-view=\"performance\"", "benchmark-reduction", "benchmark-caveat"} {

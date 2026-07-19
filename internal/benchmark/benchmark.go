@@ -5,6 +5,7 @@ package benchmark
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -58,27 +59,44 @@ type Report struct {
 }
 
 type Environment struct {
-	ServerProduct string `json:"server_product"`
-	ServerVersion string `json:"server_version"`
-	Address       string `json:"address"`
-	OperatingSys  string `json:"os"`
-	Architecture  string `json:"arch"`
-	LogicalCPUs   int    `json:"logical_cpus"`
-	Driver        string `json:"driver"`
-	DriverVersion string `json:"driver_version"`
-	Accelerator   string `json:"accelerator_version"`
-	Commit        string `json:"accelerator_commit"`
+	ServerProduct      string         `json:"server_product"`
+	ServerVersion      string         `json:"server_version"`
+	Address            string         `json:"address"`
+	OperatingSys       string         `json:"os"`
+	Architecture       string         `json:"arch"`
+	LogicalCPUs        int            `json:"logical_cpus"`
+	CPUProfile         string         `json:"cpu_profile"`
+	Driver             string         `json:"driver"`
+	DriverVersion      string         `json:"driver_version"`
+	Accelerator        string         `json:"accelerator_version"`
+	Commit             string         `json:"accelerator_commit"`
+	ServerSettings     ServerSettings `json:"server_settings"`
+	ServerConfigDigest string         `json:"server_config_digest"`
+}
+
+type ServerSettings struct {
+	MaxConnections        int64  `json:"max_connections"`
+	InnoDBBufferPoolBytes int64  `json:"innodb_buffer_pool_bytes"`
+	CharacterSet          string `json:"character_set"`
+	Collation             string `json:"collation"`
+	SQLMode               string `json:"sql_mode"`
+	BinlogFormat          string `json:"binlog_format"`
 }
 
 type Workload struct {
-	Name        string `json:"name"`
-	OpenClients int    `json:"open_clients"`
-	Concurrency int    `json:"active_concurrency"`
-	Operations  int    `json:"operations_per_path"`
-	Rows        int    `json:"dataset_rows"`
-	PayloadSize int    `json:"payload_bytes"`
-	DirectRuns  int    `json:"direct_runs"`
-	QueryShape  string `json:"query_shape"`
+	Name                  string `json:"name"`
+	Seed                  int    `json:"seed"`
+	OpenClients           int    `json:"open_clients"`
+	Concurrency           int    `json:"active_concurrency"`
+	Operations            int    `json:"operations_per_path"`
+	Rows                  int    `json:"dataset_rows"`
+	PayloadSize           int    `json:"payload_bytes"`
+	DatasetEstimatedBytes int64  `json:"dataset_estimated_bytes"`
+	DatasetDigest         string `json:"dataset_digest"`
+	StorageEngine         string `json:"storage_engine"`
+	NetworkPath           string `json:"network_path"`
+	DirectRuns            int    `json:"direct_runs"`
+	QueryShape            string `json:"query_shape"`
 }
 
 type PathMetrics struct {
@@ -92,6 +110,8 @@ type PathMetrics struct {
 	P95MS                   float64 `json:"p95_ms"`
 	P99MS                   float64 `json:"p99_ms"`
 	MaxMS                   float64 `json:"max_ms"`
+	PeakHeapAllocBytes      uint64  `json:"peak_heap_alloc_bytes"`
+	PeakGoroutines          int     `json:"peak_goroutines"`
 }
 
 type Gains struct {
@@ -182,6 +202,10 @@ func Run(ctx context.Context, options Options) (_ Report, runErr error) {
 	if strings.Contains(strings.ToLower(version+" "+comment), "mariadb") {
 		product = "mariadb"
 	}
+	settings, err := readServerSettings(ctx, admin)
+	if err != nil {
+		return Report{}, err
+	}
 
 	directReady, directPeak, err := measureDirectReadiness(ctx, connector, options.Clients)
 	if err != nil {
@@ -263,26 +287,34 @@ func Run(ctx context.Context, options Options) (_ Report, runErr error) {
 		CompletedAt:   time.Now().UTC(),
 		Confidence:    "local-measured-experimental",
 		Environment: Environment{
-			ServerProduct: product,
-			ServerVersion: version,
-			Address:       net.JoinHostPort(options.Config.Upstream.Host, strconv.Itoa(options.Config.Upstream.Port)),
-			OperatingSys:  runtime.GOOS,
-			Architecture:  runtime.GOARCH,
-			LogicalCPUs:   runtime.NumCPU(),
-			Driver:        "github.com/go-sql-driver/mysql",
-			DriverVersion: "v1.9.3",
-			Accelerator:   buildinfo.Version,
-			Commit:        buildinfo.Commit,
+			ServerProduct:      product,
+			ServerVersion:      version,
+			Address:            net.JoinHostPort(options.Config.Upstream.Host, strconv.Itoa(options.Config.Upstream.Port)),
+			OperatingSys:       runtime.GOOS,
+			Architecture:       runtime.GOARCH,
+			LogicalCPUs:        runtime.NumCPU(),
+			CPUProfile:         fmt.Sprintf("%s/%s; %d logical CPUs", runtime.GOOS, runtime.GOARCH, runtime.NumCPU()),
+			Driver:             "github.com/go-sql-driver/mysql",
+			DriverVersion:      "v1.9.3",
+			Accelerator:        buildinfo.Version,
+			Commit:             buildinfo.Commit,
+			ServerSettings:     settings,
+			ServerConfigDigest: digest(settings),
 		},
 		Workload: Workload{
-			Name:        "bounded-point-read-comparison",
-			OpenClients: options.Clients,
-			Concurrency: options.Concurrency,
-			Operations:  options.Operations,
-			Rows:        options.Rows,
-			PayloadSize: 128,
-			DirectRuns:  2,
-			QueryShape:  "single-row primary-key SELECT; no cache; local TCP",
+			Name:                  "bounded-point-read-comparison",
+			Seed:                  21188,
+			OpenClients:           options.Clients,
+			Concurrency:           options.Concurrency,
+			Operations:            options.Operations,
+			Rows:                  options.Rows,
+			PayloadSize:           128,
+			DatasetEstimatedBytes: int64(options.Rows) * (128 + 8 + 4),
+			DatasetDigest:         digest(fmt.Sprintf("seed=21188;rows=%d;payload=128;counter=0", options.Rows)),
+			StorageEngine:         "InnoDB temporary schema",
+			NetworkPath:           "loopback TCP",
+			DirectRuns:            2,
+			QueryShape:            "single-row primary-key SELECT; no cache; local TCP",
 		},
 		Direct:      direct,
 		Accelerator: accelerated,
@@ -378,6 +410,9 @@ func runWorkload(ctx context.Context, operations, concurrency, rows int, databas
 	latencies := make([]time.Duration, operations)
 	var next atomic.Int64
 	var errorsFound atomic.Int64
+	monitorDone := make(chan struct{})
+	monitorResult := make(chan runtimeSample, 1)
+	go monitorRuntime(monitorDone, monitorResult)
 	started := time.Now()
 	var wait sync.WaitGroup
 	for worker := 0; worker < concurrency; worker++ {
@@ -402,6 +437,8 @@ func runWorkload(ctx context.Context, operations, concurrency, rows int, databas
 		}(worker)
 	}
 	wait.Wait()
+	close(monitorDone)
+	processPeak := <-monitorResult
 	duration := time.Since(started)
 	slices.Sort(latencies)
 	successful := operations - int(errorsFound.Load())
@@ -414,7 +451,57 @@ func runWorkload(ctx context.Context, operations, concurrency, rows int, databas
 		P95MS:               percentile(latencies, 0.95),
 		P99MS:               percentile(latencies, 0.99),
 		MaxMS:               milliseconds(latencies[len(latencies)-1]),
+		PeakHeapAllocBytes:  processPeak.heapAllocBytes,
+		PeakGoroutines:      processPeak.goroutines,
 	}
+}
+
+type runtimeSample struct {
+	heapAllocBytes uint64
+	goroutines     int
+}
+
+func monitorRuntime(done <-chan struct{}, result chan<- runtimeSample) {
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+	peak := runtimeSample{}
+	sample := func() {
+		var memory runtime.MemStats
+		runtime.ReadMemStats(&memory)
+		peak.heapAllocBytes = max(peak.heapAllocBytes, memory.HeapAlloc)
+		peak.goroutines = max(peak.goroutines, runtime.NumGoroutine())
+	}
+	for {
+		sample()
+		select {
+		case <-done:
+			result <- peak
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func readServerSettings(ctx context.Context, database *sql.DB) (ServerSettings, error) {
+	var settings ServerSettings
+	err := database.QueryRowContext(ctx, `SELECT @@max_connections, @@innodb_buffer_pool_size, @@character_set_server, @@collation_server, @@sql_mode, @@binlog_format`).Scan(
+		&settings.MaxConnections,
+		&settings.InnoDBBufferPoolBytes,
+		&settings.CharacterSet,
+		&settings.Collation,
+		&settings.SQLMode,
+		&settings.BinlogFormat,
+	)
+	if err != nil {
+		return ServerSettings{}, fmt.Errorf("read benchmark server settings: %w", err)
+	}
+	return settings, nil
+}
+
+func digest(value any) string {
+	encoded, _ := json.Marshal(value)
+	sum := sha256.Sum256(encoded)
+	return hex.EncodeToString(sum[:])
 }
 
 func warm(ctx context.Context, database *sql.DB, query string, concurrency int) error {
@@ -508,6 +595,8 @@ func medianPathMetrics(first, second PathMetrics) PathMetrics {
 		P95MS:               median(first.P95MS, second.P95MS),
 		P99MS:               median(first.P99MS, second.P99MS),
 		MaxMS:               median(first.MaxMS, second.MaxMS),
+		PeakHeapAllocBytes:  max(first.PeakHeapAllocBytes, second.PeakHeapAllocBytes),
+		PeakGoroutines:      max(first.PeakGoroutines, second.PeakGoroutines),
 	}
 }
 

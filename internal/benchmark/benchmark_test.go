@@ -48,3 +48,36 @@ func TestOptionsValidation(t *testing.T) {
 		t.Fatal("unsafe benchmark options were accepted")
 	}
 }
+
+func TestDigestIsDeterministicAndSensitive(t *testing.T) {
+	settings := ServerSettings{MaxConnections: 151, InnoDBBufferPoolBytes: 128 << 20, CharacterSet: "utf8mb4"}
+	if first, second := digest(settings), digest(settings); first != second || len(first) != 64 {
+		t.Fatalf("unstable digest: %q != %q", first, second)
+	}
+	changed := settings
+	changed.MaxConnections++
+	if digest(settings) == digest(changed) {
+		t.Fatal("different settings produced the same digest")
+	}
+}
+
+func TestMonitorRuntimeRecordsNonzeroPeak(t *testing.T) {
+	done := make(chan struct{})
+	result := make(chan runtimeSample, 1)
+	go monitorRuntime(done, result)
+	close(done)
+	peak := <-result
+	if peak.heapAllocBytes == 0 || peak.goroutines == 0 {
+		t.Fatalf("runtime peak = %+v", peak)
+	}
+}
+
+func TestMedianPathMetricsKeepsResourcePeaks(t *testing.T) {
+	got := medianPathMetrics(
+		PathMetrics{Operations: 100, PeakHeapAllocBytes: 20, PeakGoroutines: 5},
+		PathMetrics{Operations: 100, PeakHeapAllocBytes: 10, PeakGoroutines: 8},
+	)
+	if got.PeakHeapAllocBytes != 20 || got.PeakGoroutines != 8 {
+		t.Fatalf("median metrics = %+v", got)
+	}
+}

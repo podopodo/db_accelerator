@@ -17,4 +17,6 @@ Goal: freeze the honest product contract and create a buildable, testable Go rep
 - [ ] CI runs build, unit, lint, and race jobs.
 - [ ] Product promise and non-goals are approved.
 - [ ] Benchmark and failure fixtures are reproducible.
-- [ ] V0.0.2 interfaces have named owners.
+- [x] V0.0.2 interfaces have named owners.
+
+V0.0.2 interface owner: `/root` for client protocol, upstream connector, relay, transport security, and differential quality gates.
