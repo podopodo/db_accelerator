@@ -28,6 +28,8 @@ Plain MySQL protocol provides no universal idempotency key. Accelerator cannot h
 
 Rule: plain client sees connection failure. Accelerator never guesses and never blindly retries.
 
+Current experimental proof: the V0.0.3 seed-21188 gate covers commit, rollback, savepoint, lock `NOWAIT`, a real deadlock, active-client disconnect, prepared work inside and outside a transaction, a concurrent account-transfer conservation invariant, injected lost response, and accelerator shutdown after upstream commit but before the client response. MariaDB 11.7.2 passes three repeated runs; Oracle MySQL 8.4.10 passes the cross-server transaction/prepared lane. This is proof for the recorded matrix, not yet a stable-release certification.
+
 ## Guarantee B: identified atomic operation
 
 Added in V1.5 and certified in V2.

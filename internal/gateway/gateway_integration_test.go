@@ -3,10 +3,12 @@ package gateway
 import (
 	"context"
 	"database/sql"
+	sqldriver "database/sql/driver"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -65,12 +67,16 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	serviceStopped := false
 	if err := service.Start(ctx); err != nil {
 		cancel()
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		cancel()
+		if serviceStopped {
+			return
+		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer shutdownCancel()
 		if err := service.Shutdown(shutdownCtx); err != nil {
@@ -204,6 +210,44 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 		t.Fatalf("column metadata direct=%+v accelerated=%+v", directShape, acceleratedShape)
 	}
 
+	if _, err := admin.Exec("CREATE TABLE " + databaseName + ".reset_isolation (id INT PRIMARY KEY) ENGINE=InnoDB"); err != nil {
+		t.Fatal(err)
+	}
+	dirtyConnection, err := service.database.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		"SET autocommit=0",
+		"SET NAMES latin1 COLLATE latin1_swedish_ci",
+		"SET SESSION time_zone = '+00:00'",
+		"SET SESSION sql_mode = 'ANSI'",
+		"INSERT INTO " + databaseName + ".reset_isolation VALUES (1)",
+	} {
+		if _, err := dirtyConnection.ExecContext(context.Background(), statement); err != nil {
+			dirtyConnection.Close()
+			t.Fatalf("contaminate physical session: %v", err)
+		}
+	}
+	if err := dirtyConnection.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var resetRows, resetAutocommit int
+	var resetCharset, resetCollation, resetSQLMode, resetTimeZone string
+	resetQuery := "SELECT (SELECT COUNT(*) FROM " + databaseName + ".reset_isolation), @@autocommit, @@character_set_connection, @@collation_connection, @@sql_mode, @@time_zone"
+	if err := client.QueryRow(resetQuery).Scan(&resetRows, &resetAutocommit, &resetCharset, &resetCollation, &resetSQLMode, &resetTimeZone); err != nil {
+		t.Fatal(err)
+	}
+	baseline := service.baseline
+	if resetRows != 0 || resetAutocommit != 1 || resetCharset != baseline.CharacterSet || resetCollation != baseline.Collation || resetSQLMode != baseline.SQLMode || resetTimeZone != baseline.TimeZone {
+		t.Fatalf("connection reset rows=%d autocommit=%d charset=%q collation=%q sql_mode=%q time_zone=%q baseline=%+v", resetRows, resetAutocommit, resetCharset, resetCollation, resetSQLMode, resetTimeZone, baseline)
+	}
+	for _, unsupported := range []string{"SET @client_secret = 1", "CREATE TEMPORARY TABLE unsafe_temp (id INT)"} {
+		if _, err := client.Exec(unsupported); err == nil {
+			t.Fatalf("unsafe session state was accepted: %s", unsupported)
+		}
+	}
+
 	if _, err := client.Exec(`CREATE TABLE differential_values (
 		id INT PRIMARY KEY,
 		text_value VARCHAR(64) NOT NULL,
@@ -261,6 +305,16 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	}
 	if directCast != acceleratedCast || directWarnings == 0 || acceleratedWarnings != directWarnings {
 		t.Fatalf("warning result direct=%d/%d accelerated=%d/%d", directCast, directWarnings, acceleratedCast, acceleratedWarnings)
+	}
+	resetDiscardsBefore := service.resetDiscards.Load()
+	if err := client.QueryRow("SELECT 1").Scan(&answer); err != nil || answer != 1 {
+		t.Fatalf("query after warning contamination value=%d err=%v", answer, err)
+	}
+	if service.resetDiscards.Load() <= resetDiscardsBefore {
+		var warningsAfterReset uint16
+		if err := client.QueryRow("SHOW COUNT(*) WARNINGS").Scan(&warningsAfterReset); err != nil || warningsAfterReset != 0 {
+			t.Fatalf("warning state survived verified reset count=%d err=%v", warningsAfterReset, err)
+		}
 	}
 	var largeValue string
 	if err := client.QueryRow("SELECT REPEAT('x', 1048576)").Scan(&largeValue); err != nil || len(largeValue) != 1048576 {
@@ -341,6 +395,75 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 		t.Fatalf("insert result affected=%d insert_id=%d", affected, insertID)
 	}
 
+	if _, err := client.Exec("CREATE TABLE prepared_values (id BIGINT AUTO_INCREMENT PRIMARY KEY, text_value VARCHAR(128) NOT NULL, blob_value MEDIUMBLOB NOT NULL, nullable_value VARCHAR(32) NULL, amount DECIMAL(10,2) NOT NULL, date_value DATE NOT NULL, time_value TIME(6) NOT NULL, datetime_value DATETIME(6) NOT NULL) ENGINE=InnoDB"); err != nil {
+		t.Fatal(err)
+	}
+	preparedInsert, err := client.Prepare("INSERT INTO prepared_values (text_value, blob_value, nullable_value, amount, date_value, time_value, datetime_value) VALUES (?, ?, ?, ?, ?, ?, ?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	largePreparedValue := make([]byte, 5<<20)
+	for index := range largePreparedValue {
+		largePreparedValue[index] = byte(index % 251)
+	}
+	preparedDate := time.Date(2026, time.July, 19, 0, 0, 0, 0, time.UTC)
+	preparedDateTime := time.Date(2026, time.July, 19, 12, 34, 56, 123456000, time.UTC)
+	preparedResult, err := preparedInsert.Exec("བཀྲ་ཤིས", largePreparedValue, nil, "12.34", preparedDate, "12:34:56.123456", preparedDateTime)
+	if err != nil {
+		preparedInsert.Close()
+		t.Fatal(err)
+	}
+	preparedID, _ := preparedResult.LastInsertId()
+	if preparedID != 1 {
+		preparedInsert.Close()
+		t.Fatalf("prepared insert id=%d", preparedID)
+	}
+	if err := preparedInsert.Close(); err != nil {
+		t.Fatal(err)
+	}
+	preparedQuery, err := client.Prepare("SELECT text_value, blob_value, nullable_value, amount, date_value, time_value, datetime_value, CAST(? AS SIGNED) FROM prepared_values WHERE id = ?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var preparedText, preparedAmount string
+	var preparedBlob []byte
+	var preparedNull sql.NullString
+	var preparedSigned int64
+	var returnedDate, returnedDateTime time.Time
+	var returnedTime string
+	if err := preparedQuery.QueryRow(-9, preparedID).Scan(&preparedText, &preparedBlob, &preparedNull, &preparedAmount, &returnedDate, &returnedTime, &returnedDateTime, &preparedSigned); err != nil {
+		preparedQuery.Close()
+		t.Fatal(err)
+	}
+	if preparedText != "བཀྲ་ཤིས" || len(preparedBlob) != len(largePreparedValue) || preparedBlob[0] != 0 || preparedBlob[len(preparedBlob)-1] != largePreparedValue[len(largePreparedValue)-1] || preparedNull.Valid || preparedAmount != "12.34" || !returnedDate.Equal(preparedDate) || returnedTime != "12:34:56.123456" || !returnedDateTime.Equal(preparedDateTime) || preparedSigned != -9 {
+		preparedQuery.Close()
+		t.Fatalf("prepared values text=%q blob=%d null=%+v amount=%q date=%s time=%q datetime=%s signed=%d", preparedText, len(preparedBlob), preparedNull, preparedAmount, returnedDate, returnedTime, returnedDateTime, preparedSigned)
+	}
+	if err := preparedQuery.Close(); err != nil {
+		t.Fatal(err)
+	}
+	preparedTx, err := client.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparedUpdate, err := preparedTx.Prepare("UPDATE prepared_values SET amount = ? WHERE id = ?")
+	if err != nil {
+		preparedTx.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := preparedUpdate.Exec("99.99", preparedID); err != nil {
+		preparedUpdate.Close()
+		preparedTx.Rollback()
+		t.Fatal(err)
+	}
+	_ = preparedUpdate.Close()
+	if err := preparedTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.QueryRow("SELECT amount FROM prepared_values WHERE id = 1").Scan(&preparedAmount); err != nil || preparedAmount != "12.34" {
+		t.Fatalf("prepared rollback amount=%q err=%v", preparedAmount, err)
+	}
+
 	tx, err := client.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -368,6 +491,164 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	if err := client.QueryRow("SELECT balance FROM ledger WHERE id = 1").Scan(&answer); err != nil || answer != 75 {
 		t.Fatalf("commit balance=%d err=%v", answer, err)
 	}
+	if service.commitGeneration.Load() == 0 {
+		t.Fatal("successful transaction did not advance the commit generation before its response")
+	}
+
+	tx, err = client.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("UPDATE ledger SET balance = 60 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("SAVEPOINT before_second_update"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("UPDATE ledger SET balance = 10 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec("ROLLBACK TO SAVEPOINT before_second_update"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.QueryRow("SELECT balance FROM ledger WHERE id = 1").Scan(&answer); err != nil || answer != 60 {
+		t.Fatalf("savepoint balance=%d err=%v", answer, err)
+	}
+
+	lockingTx, err := admin.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockingTx.Exec("UPDATE " + databaseName + ".ledger SET balance = balance WHERE id = 1"); err != nil {
+		lockingTx.Rollback()
+		t.Fatal(err)
+	}
+	waitingTx, err := client.Begin()
+	if err != nil {
+		lockingTx.Rollback()
+		t.Fatal(err)
+	}
+	var lockedBalance int
+	lockErr := waitingTx.QueryRow("SELECT balance FROM ledger WHERE id = 1 FOR UPDATE NOWAIT").Scan(&lockedBalance)
+	var lockMySQL *driver.MySQLError
+	if !errors.As(lockErr, &lockMySQL) || lockMySQL.Number != 1205 && lockMySQL.Number != 3572 {
+		waitingTx.Rollback()
+		lockingTx.Rollback()
+		t.Fatalf("lock NOWAIT error=%v", lockErr)
+	}
+	if err := waitingTx.Rollback(); err != nil {
+		lockingTx.Rollback()
+		t.Fatal(err)
+	}
+	if err := lockingTx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := client.Exec("INSERT INTO ledger (id, balance) VALUES (2, 100)"); err != nil {
+		t.Fatal(err)
+	}
+	deadlockGateway, err := client.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadlockDirect, err := admin.Begin()
+	if err != nil {
+		deadlockGateway.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := deadlockGateway.Exec("UPDATE ledger SET balance = 59 WHERE id = 1"); err != nil {
+		deadlockGateway.Rollback()
+		deadlockDirect.Rollback()
+		t.Fatal(err)
+	}
+	if _, err := deadlockDirect.Exec("UPDATE " + databaseName + ".ledger SET balance = 99 WHERE id = 2"); err != nil {
+		deadlockGateway.Rollback()
+		deadlockDirect.Rollback()
+		t.Fatal(err)
+	}
+	gatewayDeadlock := make(chan error, 1)
+	go func() {
+		_, updateErr := deadlockGateway.Exec("UPDATE ledger SET balance = 98 WHERE id = 2")
+		gatewayDeadlock <- updateErr
+	}()
+	time.Sleep(100 * time.Millisecond)
+	_, directDeadlock := deadlockDirect.Exec("UPDATE " + databaseName + ".ledger SET balance = 58 WHERE id = 1")
+	acceleratedDeadlock := <-gatewayDeadlock
+	deadlockErrors := 0
+	for _, candidate := range []error{directDeadlock, acceleratedDeadlock} {
+		var mysqlError *driver.MySQLError
+		if errors.As(candidate, &mysqlError) && mysqlError.Number == 1213 {
+			deadlockErrors++
+		}
+	}
+	if deadlockErrors != 1 {
+		deadlockGateway.Rollback()
+		deadlockDirect.Rollback()
+		t.Fatalf("deadlock direct=%v accelerated=%v", directDeadlock, acceleratedDeadlock)
+	}
+	_ = deadlockGateway.Rollback()
+	_ = deadlockDirect.Rollback()
+	var firstAfterDeadlock, secondAfterDeadlock int
+	if err := client.QueryRow("SELECT balance, (SELECT balance FROM ledger WHERE id = 2) FROM ledger WHERE id = 1").Scan(&firstAfterDeadlock, &secondAfterDeadlock); err != nil || firstAfterDeadlock != 60 || secondAfterDeadlock != 100 {
+		t.Fatalf("deadlock cleanup balances=%d/%d err=%v", firstAfterDeadlock, secondAfterDeadlock, err)
+	}
+
+	disconnectingClient := openGatewayClient(t, cfg, secrets, service.Address())
+	disconnectingConnection, err := disconnectingClient.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disconnectingConnection.ExecContext(context.Background(), "BEGIN"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := disconnectingConnection.ExecContext(context.Background(), "UPDATE ledger SET balance = 5 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	_ = disconnectingConnection.Raw(func(any) error { return sqldriver.ErrBadConn })
+	_ = disconnectingConnection.Close()
+	_ = disconnectingClient.Close()
+	deadline := time.Now().Add(3 * time.Second)
+	for service.pinned.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if service.pinned.Load() != 0 {
+		t.Fatal("disconnected transaction remained pinned")
+	}
+	if err := admin.QueryRow("SELECT balance FROM " + databaseName + ".ledger WHERE id = 1").Scan(&answer); err != nil || answer != 60 {
+		t.Fatalf("disconnect rollback balance=%d err=%v", answer, err)
+	}
+
+	ambiguousClient := openGatewayClient(t, cfg, secrets, service.Address())
+	ambiguousTx, err := ambiguousClient.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ambiguousTx.Exec("UPDATE ledger SET balance = 61 WHERE id = 1"); err != nil {
+		ambiguousTx.Rollback()
+		t.Fatal(err)
+	}
+	service.faultMu.Lock()
+	service.beforeCommitResponse = func() error { return errors.New("injected lost commit response") }
+	service.faultMu.Unlock()
+	ambiguousErr := ambiguousTx.Commit()
+	service.faultMu.Lock()
+	service.beforeCommitResponse = nil
+	service.faultMu.Unlock()
+	_ = ambiguousClient.Close()
+	if ambiguousErr == nil {
+		t.Fatal("lost commit response was reported as success")
+	}
+	if err := admin.QueryRow("SELECT balance FROM " + databaseName + ".ledger WHERE id = 1").Scan(&answer); err != nil || answer != 61 {
+		t.Fatalf("ambiguous commit persistence balance=%d err=%v", answer, err)
+	}
+	if _, err := client.Exec("UPDATE ledger SET balance = 60 WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	runAtomicTransferGate(t, prefix, admin, client, cfg, secrets, service, databaseName)
 
 	const logicalClients = 64
 	clients := make([]*sql.DB, logicalClients)
@@ -396,6 +677,188 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 	for _, database := range clients {
 		_ = database.Close()
 	}
+
+	terminationClient := openGatewayClient(t, cfg, secrets, service.Address())
+	terminationTx, err := terminationClient.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := terminationTx.Exec("UPDATE ledger SET balance = 62 WHERE id = 1"); err != nil {
+		terminationTx.Rollback()
+		t.Fatal(err)
+	}
+	commitReached := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	service.faultMu.Lock()
+	service.beforeCommitResponse = func() error {
+		close(commitReached)
+		<-releaseCommit
+		return nil
+	}
+	service.faultMu.Unlock()
+	commitResult := make(chan error, 1)
+	go func() { commitResult <- terminationTx.Commit() }()
+	select {
+	case <-commitReached:
+	case <-time.After(5 * time.Second):
+		close(releaseCommit)
+		t.Fatal("commit did not reach the post-upstream response boundary")
+	}
+	shutdownResult := make(chan error, 1)
+	go func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		shutdownResult <- service.Shutdown(shutdownCtx)
+	}()
+	select {
+	case commitErr := <-commitResult:
+		if commitErr == nil {
+			close(releaseCommit)
+			t.Fatal("accelerator termination after upstream commit was reported as success")
+		}
+	case <-time.After(5 * time.Second):
+		close(releaseCommit)
+		t.Fatal("client did not receive connection failure during accelerator termination")
+	}
+	close(releaseCommit)
+	if err := <-shutdownResult; err != nil {
+		t.Fatal(err)
+	}
+	serviceStopped = true
+	_ = terminationClient.Close()
+	if err := admin.QueryRow("SELECT balance FROM " + databaseName + ".ledger WHERE id = 1").Scan(&answer); err != nil || answer != 62 {
+		t.Fatalf("post-termination committed balance=%d err=%v", answer, err)
+	}
+}
+
+func runAtomicTransferGate(t *testing.T, server string, direct, accelerated *sql.DB, cfg config.Config, secrets config.Secrets, service *Service, databaseName string) {
+	t.Helper()
+	for _, table := range []string{"atomic_direct_accounts", "atomic_proxy_accounts"} {
+		if _, err := direct.Exec("CREATE TABLE " + databaseName + "." + table + " (id INT PRIMARY KEY, balance BIGINT NOT NULL) ENGINE=InnoDB"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := direct.Exec("INSERT INTO " + databaseName + "." + table + " VALUES (1,1000),(2,1000),(3,1000),(4,1000)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const seed int64 = 21188
+	random := rand.New(rand.NewSource(seed))
+	operations := make([]testkit.AtomicOperation, 64)
+	for index := range operations {
+		from := random.Intn(4) + 1
+		to := random.Intn(3) + 1
+		if to >= from {
+			to++
+		}
+		operations[index] = testkit.AtomicOperation{Index: index, From: from, To: to, Amount: int64(random.Intn(9) + 1)}
+	}
+	for _, operation := range operations {
+		tx, err := direct.Begin()
+		if err == nil {
+			_, err = tx.Exec("UPDATE "+databaseName+".atomic_direct_accounts SET balance = balance - ? WHERE id = ?", operation.Amount, operation.From)
+		}
+		if err == nil {
+			_, err = tx.Exec("UPDATE "+databaseName+".atomic_direct_accounts SET balance = balance + ? WHERE id = ?", operation.Amount, operation.To)
+		}
+		if err == nil {
+			err = tx.Commit()
+		} else if tx != nil {
+			_ = tx.Rollback()
+		}
+		if err != nil {
+			saveAtomicFailure(t, server, service.baseline.TransactionIsolation, operations, err)
+		}
+	}
+	const workers = 8
+	clients := make([]*sql.DB, workers)
+	for index := range clients {
+		clients[index] = openGatewayClient(t, cfg, secrets, service.Address())
+		defer clients[index].Close()
+	}
+	var wait sync.WaitGroup
+	errorsFound := make(chan error, len(operations))
+	for worker := 0; worker < workers; worker++ {
+		wait.Add(1)
+		go func(worker int) {
+			defer wait.Done()
+			for index := worker; index < len(operations); index += workers {
+				operation := operations[index]
+				tx, err := clients[worker].Begin()
+				if err == nil {
+					_, err = tx.Exec("UPDATE atomic_proxy_accounts SET balance = balance - ? WHERE id = ?", operation.Amount, operation.From)
+				}
+				if err == nil {
+					_, err = tx.Exec("UPDATE atomic_proxy_accounts SET balance = balance + ? WHERE id = ?", operation.Amount, operation.To)
+				}
+				if err == nil {
+					err = tx.Commit()
+				} else if tx != nil {
+					_ = tx.Rollback()
+				}
+				if err != nil {
+					errorsFound <- fmt.Errorf("operation %d: %w", operation.Index, err)
+					return
+				}
+			}
+		}(worker)
+	}
+	wait.Wait()
+	close(errorsFound)
+	for err := range errorsFound {
+		saveAtomicFailure(t, server, service.baseline.TransactionIsolation, operations, err)
+	}
+	directBalances := readAccountBalances(t, direct, databaseName+".atomic_direct_accounts")
+	proxyBalances := readAccountBalances(t, accelerated, "atomic_proxy_accounts")
+	if fmt.Sprint(directBalances) != fmt.Sprint(proxyBalances) || sumBalances(proxyBalances) != 4000 {
+		saveAtomicFailure(t, server, service.baseline.TransactionIsolation, operations, fmt.Errorf("direct=%v proxy=%v sum=%d", directBalances, proxyBalances, sumBalances(proxyBalances)))
+	}
+}
+
+func readAccountBalances(t *testing.T, database *sql.DB, table string) []int64 {
+	t.Helper()
+	rows, err := database.Query("SELECT balance FROM " + table + " ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var balances []int64
+	for rows.Next() {
+		var balance int64
+		if err := rows.Scan(&balance); err != nil {
+			t.Fatal(err)
+		}
+		balances = append(balances, balance)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return balances
+}
+
+func sumBalances(balances []int64) int64 {
+	var total int64
+	for _, balance := range balances {
+		total += balance
+	}
+	return total
+}
+
+func saveAtomicFailure(t *testing.T, server, isolation string, operations []testkit.AtomicOperation, cause error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "atomic-reproduction.json")
+	err := testkit.SaveAtomicReproduction(path, testkit.AtomicReproduction{
+		SchemaVersion: 1,
+		CreatedAt:     time.Now().UTC(),
+		Seed:          21188,
+		Server:        server,
+		Isolation:     isolation,
+		Error:         cause.Error(),
+		Operations:    operations,
+	})
+	if err != nil {
+		t.Fatalf("atomic failure=%v; save reproduction: %v", cause, err)
+	}
+	t.Fatalf("atomic failure=%v; reproduction=%s", cause, path)
 }
 
 func assertDifferentialMatch(t *testing.T, server string, run int, operation string, direct, accelerated testkit.DifferentialSnapshot) {
@@ -485,6 +948,8 @@ func openGatewayClient(t *testing.T, cfg config.Config, secrets config.Secrets, 
 	client.ReadTimeout = 5 * time.Second
 	client.WriteTimeout = 5 * time.Second
 	client.ParseTime = true
+	client.MaxAllowedPacket = 8 << 20
+	client.Logger = &driver.NopLogger{}
 	client.TLS = gatewayTestClientTLS(t, cfg)
 	connector, err := driver.NewConnector(client)
 	if err != nil {

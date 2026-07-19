@@ -147,6 +147,32 @@ func TestAuthenticationLimiterLocksExpiresAndClears(t *testing.T) {
 	}
 }
 
+func TestPinAndRejectionReasonsExposeOnlyStableCategories(t *testing.T) {
+	service := &Service{rejectionReasons: make(map[string]uint64), pinReasons: make(map[string]uint64)}
+	service.recordPin("transaction")
+	service.recordPin("prepared_statement")
+	service.recordRejection("temporary_object")
+	snapshot := service.reasonSnapshot(service.pinReasons)
+	if snapshot["transaction"] != 1 || snapshot["prepared_statement"] != 1 {
+		t.Fatalf("pin reasons=%v", snapshot)
+	}
+	snapshot["transaction"] = 99
+	if service.pinReasons["transaction"] != 1 {
+		t.Fatal("reason snapshot aliases mutable metrics")
+	}
+	for input, want := range map[string]string{
+		"multiple statements are not enabled":              "multi_statement",
+		"temporary objects are unsafe for a shared pool":   "temporary_object",
+		"user variables are unsafe for a shared pool":      "user_variable",
+		"session-changing SET is unsafe for a shared pool": "session_setting",
+		"statement type is not supported in pooled mode":   "unsupported_statement",
+	} {
+		if got := rejectionReason(input); got != want {
+			t.Fatalf("rejectionReason(%q)=%q want %q", input, got, want)
+		}
+	}
+}
+
 func TestAuthenticationLimiterBoundsSourceInventory(t *testing.T) {
 	limiter := newAuthLimiter()
 	limiter.maxEntries = 2

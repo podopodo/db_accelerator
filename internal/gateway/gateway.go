@@ -26,6 +26,7 @@ import (
 	"github.com/podopodo/db_accelerator/internal/engine"
 	protocol "github.com/podopodo/db_accelerator/internal/protocol/mysql"
 	"github.com/podopodo/db_accelerator/internal/relay"
+	sessionstate "github.com/podopodo/db_accelerator/internal/session"
 	"github.com/podopodo/db_accelerator/internal/upstream"
 )
 
@@ -43,20 +44,29 @@ type Service struct {
 	clientCertificate *clientCertificateStore
 	clientVerifier    []byte
 	permission        permissionIdentity
+	baseline          upstream.Metadata
+	resetTimeout      time.Duration
 	admission         chan struct{}
 	queue             chan struct{}
 
-	mu       sync.Mutex
-	listener net.Listener
-	cancel   context.CancelFunc
-	done     chan error
+	mu                   sync.Mutex
+	listener             net.Listener
+	cancel               context.CancelFunc
+	done                 chan error
+	reasonMu             sync.Mutex
+	rejectionReasons     map[string]uint64
+	pinReasons           map[string]uint64
+	faultMu              sync.Mutex
+	beforeCommitResponse func() error
 
-	waiting       atomic.Int64
-	queuedBytes   atomic.Int64
-	pinned        atomic.Int64
-	queryErrors   atomic.Uint64
-	clientBytes   atomic.Uint64
-	databaseBytes atomic.Uint64
+	waiting          atomic.Int64
+	queuedBytes      atomic.Int64
+	pinned           atomic.Int64
+	queryErrors      atomic.Uint64
+	clientBytes      atomic.Uint64
+	databaseBytes    atomic.Uint64
+	resetDiscards    atomic.Uint64
+	commitGeneration atomic.Uint64
 }
 
 func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connector, logger *slog.Logger) (*Service, error) {
@@ -67,6 +77,10 @@ func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connecto
 	if err != nil {
 		return nil, err
 	}
+	report, err := connector.Probe(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("capture upstream session baseline: %w", err)
+	}
 	database, err := connector.OpenPool(cfg.Limits.MaxUpstreamConnections)
 	if err != nil {
 		return nil, err
@@ -74,6 +88,7 @@ func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connecto
 	if logger == nil {
 		logger = slog.Default()
 	}
+	_, _, _, resetTimeout, _ := cfg.UpstreamDurations()
 	service := &Service{
 		cfg:               cfg,
 		database:          database,
@@ -83,9 +98,13 @@ func New(cfg config.Config, secrets config.Secrets, connector *upstream.Connecto
 		clientCertificate: clientCertificate,
 		clientVerifier:    protocol.NativePasswordVerifier(secrets.ClientPassword.Reveal()),
 		permission:        newPermissionIdentity(cfg),
+		baseline:          report.Metadata,
+		resetTimeout:      resetTimeout,
 		admission:         make(chan struct{}, cfg.Limits.MaxUpstreamConnections),
 		queue:             make(chan struct{}, cfg.Limits.MaxQueuedRequests),
 		done:              make(chan error, 1),
+		rejectionReasons:  make(map[string]uint64),
+		pinReasons:        make(map[string]uint64),
 	}
 	server, err := protocol.NewServer(protocol.ListenerConfig{
 		MaxConnections:  cfg.Limits.MaxLogicalConnections,
@@ -155,22 +174,26 @@ func (s *Service) Address() string {
 func (s *Service) Snapshot() relay.Snapshot {
 	stats := s.database.Stats()
 	return relay.Snapshot{
-		Mode:              "protocol-pooled",
-		ListenAddress:     s.Address(),
-		UpstreamAddress:   net.JoinHostPort(s.cfg.Upstream.Host, strconv.Itoa(s.cfg.Upstream.Port)),
-		Active:            s.server.ActiveConnections(),
-		DatabaseLinks:     int64(stats.InUse),
-		IdleDatabaseLinks: int64(stats.Idle),
-		WaitingWork:       s.waiting.Load(),
-		PinnedWork:        s.pinned.Load(),
-		AcceptedTotal:     s.server.AcceptedConnections(),
-		RejectedTotal:     s.server.RejectedConnections(),
-		RelayErrorsTotal:  s.queryErrors.Load(),
-		ClientToDBBytes:   s.clientBytes.Load(),
-		DBToClientBytes:   s.databaseBytes.Load(),
-		MaxConnections:    s.cfg.Limits.MaxUpstreamConnections,
-		ClientTLSMode:     s.cfg.Server.MySQLTLSMode,
-		ClientTLSExpires:  s.clientCertificate.expiry(),
+		Mode:               "protocol-pooled",
+		ListenAddress:      s.Address(),
+		UpstreamAddress:    net.JoinHostPort(s.cfg.Upstream.Host, strconv.Itoa(s.cfg.Upstream.Port)),
+		Active:             s.server.ActiveConnections(),
+		DatabaseLinks:      int64(stats.InUse),
+		IdleDatabaseLinks:  int64(stats.Idle),
+		WaitingWork:        s.waiting.Load(),
+		PinnedWork:         s.pinned.Load(),
+		AcceptedTotal:      s.server.AcceptedConnections(),
+		RejectedTotal:      s.server.RejectedConnections(),
+		RelayErrorsTotal:   s.queryErrors.Load(),
+		ClientToDBBytes:    s.clientBytes.Load(),
+		DBToClientBytes:    s.databaseBytes.Load(),
+		ResetDiscardsTotal: s.resetDiscards.Load(),
+		CommitGeneration:   s.commitGeneration.Load(),
+		RejectionReasons:   s.reasonSnapshot(s.rejectionReasons),
+		PinReasons:         s.reasonSnapshot(s.pinReasons),
+		MaxConnections:     s.cfg.Limits.MaxUpstreamConnections,
+		ClientTLSMode:      s.cfg.Server.MySQLTLSMode,
+		ClientTLSExpires:   s.clientCertificate.expiry(),
 	}
 }
 
@@ -238,7 +261,11 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 		return err
 	}
 
-	session := &clientSession{service: s, context: ctx, autocommit: true}
+	logical := sessionstate.NewLogical(sessionstate.Baseline{
+		Database: s.cfg.Upstream.Database,
+		Charset:  "utf8mb4",
+	})
+	session := &clientSession{service: s, context: ctx, state: logical}
 	defer session.close()
 	for {
 		message, err := client.ReadMessage()
@@ -259,13 +286,49 @@ func (s *Service) handleClient(ctx context.Context, client *protocol.Client) err
 			err = session.initDatabase(client, string(message.Payload[1:]))
 		case protocol.CommandQuery:
 			err = session.query(ctx, client, string(message.Payload[1:]))
+		case protocol.CommandStmtPrepare:
+			err = session.prepare(ctx, client, string(message.Payload[1:]))
+		case protocol.CommandStmtExecute:
+			err = session.executePrepared(ctx, client, message.Payload)
+		case protocol.CommandStmtSendLongData:
+			err = session.sendPreparedLongData(client, message.Payload)
+		case protocol.CommandStmtClose:
+			err = session.closePrepared(message.Payload)
+		case protocol.CommandStmtReset:
+			err = session.resetPrepared(client, message.Payload)
+		case protocol.CommandStmtFetch:
+			s.recordRejection("prepared_cursor")
+			err = writeError(client, 1, 1235, "42000", "prepared cursors are not supported in pooled mode")
 		default:
+			s.recordRejection("unknown_command")
 			err = writeError(client, 1, 1047, "08S01", "command is not supported in pooled mode")
 		}
 		if err != nil {
 			return err
 		}
 	}
+}
+
+func (s *Service) recordRejection(reason string) {
+	s.reasonMu.Lock()
+	s.rejectionReasons[reason]++
+	s.reasonMu.Unlock()
+}
+
+func (s *Service) recordPin(reason string) {
+	s.reasonMu.Lock()
+	s.pinReasons[reason]++
+	s.reasonMu.Unlock()
+}
+
+func (s *Service) reasonSnapshot(source map[string]uint64) map[string]uint64 {
+	s.reasonMu.Lock()
+	defer s.reasonMu.Unlock()
+	copy := make(map[string]uint64, len(source))
+	for reason, count := range source {
+		copy[reason] = count
+	}
+	return copy
 }
 
 func (s *Service) authenticate(response protocol.HandshakeResponse, seed []byte) error {
@@ -324,20 +387,23 @@ func (s *Service) acquire(ctx context.Context, requestBytes int64) (func(), erro
 }
 
 type clientSession struct {
-	service    *Service
-	context    context.Context
-	tx         *sql.Tx
-	txCancel   context.CancelFunc
-	release    func()
-	autocommit bool
+	service          *Service
+	context          context.Context
+	state            *sessionstate.Logical
+	tx               *sql.Tx
+	txCancel         context.CancelFunc
+	pinnedConnection *sql.Conn
+	pinnedRelease    func()
+	prepared         map[uint32]*preparedStatement
+	nextPreparedID   uint32
 }
 
 func (s *clientSession) status() uint16 {
 	var status uint16
-	if s.autocommit {
+	if s.state.Autocommit {
 		status |= protocol.ServerStatusAutocommit
 	}
-	if s.tx != nil {
+	if s.state.InTransaction {
 		status |= protocol.ServerStatusInTransaction
 	}
 	return status
@@ -346,13 +412,23 @@ func (s *clientSession) status() uint16 {
 func (s *clientSession) close() {
 	if s.tx != nil {
 		_ = s.tx.Rollback()
-		s.finishTransaction()
+		s.tx = nil
 	}
+	if s.txCancel != nil {
+		s.txCancel()
+		s.txCancel = nil
+	}
+	s.closeAllPrepared()
+	s.releasePinnedConnection(true)
+	s.state.Disconnect()
 }
 
 func (s *clientSession) initDatabase(client *protocol.Client, database string) error {
 	if database == "" || database != s.service.cfg.Upstream.Database {
 		return writeError(client, 1, 1049, "42000", "unknown or unconfigured database")
+	}
+	if err := s.state.SelectDatabase(database); err != nil {
+		return writeError(client, 1, 1049, "42000", "invalid database state")
 	}
 	_, err := s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 	return err
@@ -364,6 +440,7 @@ func (s *clientSession) query(parent context.Context, client *protocol.Client, q
 		return writeError(client, 1, 1065, "42000", "query was empty")
 	}
 	if statement.Kind == engine.StatementUnsupported {
+		s.service.recordRejection(rejectionReason(statement.Reason))
 		return writeError(client, 1, 1235, "42000", statement.Reason)
 	}
 	_, readTimeout, writeTimeout, _, _ := s.service.cfg.UpstreamDurations()
@@ -389,21 +466,33 @@ func (s *clientSession) query(parent context.Context, client *protocol.Client, q
 	case engine.StatementRollback:
 		return s.rollback(client)
 	case engine.StatementAutocommitOff:
-		s.autocommit = false
+		if err := s.state.Apply(statement); err != nil {
+			return writeError(client, 1, 1192, "25000", "invalid autocommit transition")
+		}
 		_, err := s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 		return err
 	case engine.StatementAutocommitOn:
 		if s.tx != nil {
 			if err := s.tx.Commit(); err != nil {
 				s.finishTransaction()
+				s.state.Poison()
 				return err
 			}
+			s.service.commitGeneration.Add(1)
 			s.finishTransaction()
+			if err := s.service.runBeforeCommitResponse(); err != nil {
+				return err
+			}
 		}
-		s.autocommit = true
+		if err := s.state.Apply(statement); err != nil {
+			return writeError(client, 1, 1192, "25000", "invalid autocommit transition")
+		}
 		_, err := s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 		return err
 	case engine.StatementSetNames:
+		if err := s.state.Apply(statement); err != nil {
+			return writeError(client, 1, 1235, "42000", "invalid charset transition")
+		}
 		_, err := s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 		return err
 	case engine.StatementUseDatabase:
@@ -413,8 +502,10 @@ func (s *clientSession) query(parent context.Context, client *protocol.Client, q
 		}
 		name := strings.Trim(fields[1], "`")
 		return s.initDatabase(client, name)
+	case engine.StatementWarningCount:
+		return s.warningCount(client)
 	case engine.StatementSavepoint:
-		if s.tx == nil {
+		if err := s.state.Apply(statement); err != nil || s.tx == nil {
 			return writeError(client, 1, 1305, "42000", "savepoint requires an active transaction")
 		}
 		return s.exec(ctx, client, statement.SQL, true)
@@ -438,44 +529,135 @@ func (s *clientSession) query(parent context.Context, client *protocol.Client, q
 	}
 }
 
+func (s *clientSession) warningCount(client *protocol.Client) error {
+	sequence, err := s.write(client, 1, protocol.ColumnCountPayload(1))
+	if err != nil {
+		return err
+	}
+	sequence, err = s.write(client, sequence, protocol.ColumnDefinitionPayload(protocol.ColumnDefinition{
+		Schema:       s.service.cfg.Upstream.Database,
+		Name:         "COUNT(*)",
+		OriginalName: "COUNT(*)",
+		Charset:      63,
+		Length:       21,
+		Type:         protocol.ColumnTypeLongLong,
+		Flags:        protocol.ColumnFlagNotNull | protocol.ColumnFlagUnsigned | protocol.ColumnFlagBinary,
+	}))
+	if err != nil {
+		return err
+	}
+	sequence, err = s.write(client, sequence, protocol.EOFPayload(s.status(), 0))
+	if err != nil {
+		return err
+	}
+	sequence, err = s.write(client, sequence, protocol.TextRowPayload([][]byte{[]byte(strconv.FormatUint(uint64(s.state.Warnings), 10))}, []bool{false}))
+	if err != nil {
+		return err
+	}
+	_, err = s.write(client, sequence, protocol.EOFPayload(s.status(), 0))
+	return err
+}
+
 func (s *clientSession) begin(ctx context.Context) error {
-	release, err := s.service.acquire(ctx, 0)
+	created, err := s.ensurePinnedConnection(ctx, "transaction")
 	if err != nil {
 		return err
 	}
 	txContext, cancel := context.WithCancel(s.context)
-	tx, err := s.service.database.BeginTx(txContext, nil)
+	tx, err := s.pinnedConnection.BeginTx(txContext, nil)
 	if err != nil {
 		cancel()
-		release()
+		if created {
+			s.releasePinnedConnection(false)
+		}
+		return err
+	}
+	if err := s.state.Apply(engine.Statement{Kind: engine.StatementBegin}); err != nil {
+		_ = tx.Rollback()
+		cancel()
+		if created {
+			s.releasePinnedConnection(false)
+		}
 		return err
 	}
 	s.tx = tx
 	s.txCancel = cancel
-	s.release = release
-	s.service.pinned.Add(1)
 	return nil
 }
 
+func (s *clientSession) ensurePinnedConnection(ctx context.Context, reason string) (bool, error) {
+	if s.pinnedConnection != nil {
+		return false, nil
+	}
+	release, err := s.service.acquire(ctx, 0)
+	if err != nil {
+		return false, err
+	}
+	connection, err := s.service.checkout(ctx)
+	if err != nil {
+		release()
+		return false, err
+	}
+	s.pinnedConnection = connection
+	s.pinnedRelease = release
+	s.service.pinned.Add(1)
+	s.service.recordPin(reason)
+	return true, nil
+}
+
+func rejectionReason(reason string) string {
+	switch {
+	case strings.Contains(reason, "multiple statements"):
+		return "multi_statement"
+	case strings.Contains(reason, "temporary"):
+		return "temporary_object"
+	case strings.Contains(reason, "user variables"):
+		return "user_variable"
+	case strings.Contains(reason, "connection-state"), strings.Contains(reason, "connection-local"):
+		return "connection_state"
+	case strings.Contains(reason, "stored"), strings.Contains(reason, "multi-result"):
+		return "stored_or_multi_result"
+	case strings.Contains(reason, "SET"):
+		return "session_setting"
+	case strings.Contains(reason, "common table"):
+		return "cte_unclassified"
+	default:
+		return "unsupported_statement"
+	}
+}
+
+func (s *clientSession) releasePinnedConnection(discard bool) {
+	if s.pinnedConnection != nil {
+		if discard {
+			discardConnection(s.pinnedConnection)
+		} else {
+			_ = s.pinnedConnection.Close()
+		}
+		s.pinnedConnection = nil
+		s.service.pinned.Add(-1)
+	}
+	if s.pinnedRelease != nil {
+		s.pinnedRelease()
+		s.pinnedRelease = nil
+	}
+}
+
 func (s *clientSession) ensureImplicitTransaction(ctx context.Context) error {
-	if !s.autocommit && s.tx == nil {
+	if !s.state.Autocommit && s.tx == nil {
 		return s.begin(ctx)
 	}
 	return nil
 }
 
 func (s *clientSession) finishTransaction() {
-	if s.tx != nil {
-		s.service.pinned.Add(-1)
-	}
 	s.tx = nil
+	s.invalidateTransactionPrepared()
 	if s.txCancel != nil {
 		s.txCancel()
 		s.txCancel = nil
 	}
-	if s.release != nil {
-		s.release()
-		s.release = nil
+	if len(s.state.Prepared) == 0 {
+		s.releasePinnedConnection(false)
 	}
 }
 
@@ -485,21 +667,47 @@ func (s *clientSession) commit(client *protocol.Client) error {
 		return err
 	}
 	err := s.tx.Commit()
-	s.finishTransaction()
 	if err != nil {
+		s.finishTransaction()
+		s.state.Poison()
+		return err
+	}
+	if err := s.state.Apply(engine.Statement{Kind: engine.StatementCommit}); err != nil {
+		s.finishTransaction()
+		return err
+	}
+	s.service.commitGeneration.Add(1)
+	s.finishTransaction()
+	if err := s.service.runBeforeCommitResponse(); err != nil {
 		return err
 	}
 	_, err = s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 	return err
 }
 
+func (s *Service) runBeforeCommitResponse() error {
+	s.faultMu.Lock()
+	hook := s.beforeCommitResponse
+	s.faultMu.Unlock()
+	if hook == nil {
+		return nil
+	}
+	return hook()
+}
+
 func (s *clientSession) rollback(client *protocol.Client) error {
 	if s.tx != nil {
 		err := s.tx.Rollback()
-		s.finishTransaction()
 		if err != nil && !errors.Is(err, sql.ErrTxDone) {
+			s.finishTransaction()
+			s.state.Poison()
 			return s.writeSQLError(client, err)
 		}
+		if err := s.state.Apply(engine.Statement{Kind: engine.StatementRollback}); err != nil {
+			s.finishTransaction()
+			return err
+		}
+		s.finishTransaction()
 	}
 	_, err := s.write(client, 1, protocol.OKPayload(0, 0, s.status(), 0))
 	return err
@@ -520,7 +728,7 @@ func (s *clientSession) exec(ctx context.Context, client *protocol.Client, query
 			return s.writeSQLError(client, acquireErr)
 		}
 		defer release()
-		connection, connectionErr := s.service.database.Conn(ctx)
+		connection, connectionErr := s.service.checkout(ctx)
 		if connectionErr != nil {
 			return s.writeSQLError(client, connectionErr)
 		}
@@ -535,6 +743,7 @@ func (s *clientSession) exec(ctx context.Context, client *protocol.Client, query
 	}
 	affected, _ := result.RowsAffected()
 	insertID, _ := result.LastInsertId()
+	s.state.SetResult(warnings, uint64(max(0, insertID)))
 	_, err = s.write(client, 1, protocol.OKPayload(uint64(max(0, affected)), uint64(max(0, insertID)), s.status(), warnings))
 	return err
 }
@@ -551,7 +760,7 @@ func (s *clientSession) rows(ctx context.Context, client *protocol.Client, query
 		release, err = s.service.acquire(ctx, int64(len(query)))
 		if err == nil {
 			var connection *sql.Conn
-			connection, err = s.service.database.Conn(ctx)
+			connection, err = s.service.checkout(ctx)
 			if err == nil {
 				defer connection.Close()
 				rows, err = connection.QueryContext(ctx, query)
@@ -618,6 +827,7 @@ func (s *clientSession) rows(ctx context.Context, client *protocol.Client, query
 	if err != nil {
 		return s.writeSQLErrorAt(client, sequence, err)
 	}
+	s.state.SetResult(warnings, 0)
 	_, err = s.write(client, sequence, protocol.EOFPayload(s.status(), warnings))
 	return err
 }

@@ -326,14 +326,14 @@
     text("relation-copy", pooled
       ? "Idle clients hold no database socket. Safe autocommit text queries borrow a connection; transactions keep one pinned until commit or rollback."
       : "Connection reduction is disabled in this build. The safety limit still prevents an unbounded client spike from reaching MariaDB.");
-    text("wire-capability-title", pooled ? "Text protocol gateway" : "Native wire relay");
-    text("wire-capability-detail", pooled ? "Authenticated text queries execute through the bounded upstream pool." : "Byte-for-byte MySQL/MariaDB traffic forwarding.");
+    text("wire-capability-title", pooled ? "SQL protocol gateway" : "Native wire relay");
+    text("wire-capability-detail", pooled ? "Authenticated text and prepared queries execute through the bounded upstream pool." : "Byte-for-byte MySQL/MariaDB traffic forwarding.");
     const poolingGate = byId("pooling-gate-state");
     poolingGate.className = `gate-state ${pooled ? "pass" : "lock"}`;
     poolingGate.textContent = pooled ? "Live" : "Locked";
-    text("pooling-gate-detail", pooled ? "Autocommit text queries reuse connections; transactions remain pinned." : "Requires protocol-aware session reset and pinning.");
+    text("pooling-gate-detail", pooled ? "Safe text queries reuse reset connections; transactions and prepared handles remain pinned." : "Requires protocol-aware session reset and pinning.");
     text("session-inventory-copy", pooled
-      ? "Pooled mode tracks aggregate clients, waits, and pinned transactions without retaining query text or exposing client identity."
+      ? "Pooled mode tracks aggregate clients, waits, and pin reasons. Prepared SQL lives only while its client handle exists; values are never exposed."
       : "The compatibility relay forwards wire bytes without parsing client identity, transaction state, or query text.");
     text("upstream-limit-behavior", pooled ? "Queries wait at the pool boundary" : "Hard rejection at limit");
     text("queue-limit-behavior", pooled ? "Request count and queued SQL bytes are hard bounded" : "Not active in relay mode");
@@ -376,6 +376,10 @@
     text("build-commit", data.build.commit);
     text("build-go", data.build.go_version);
     text("build-date", formatDate(data.build.build_date));
+    const reasonSummary = (reasons) => Object.entries(reasons || {}).sort((a, b) => b[1] - a[1]).map(([reason, count]) => `${reason.replaceAll("_", " ")} ${count}`).join(" · ") || "none";
+    text("diag-pin-reasons", reasonSummary(data.relay.pin_reasons));
+    text("diag-rejection-reasons", reasonSummary(data.relay.rejection_reasons));
+    text("diag-reset-discards", integer(data.relay.reset_discards_total));
 
     samples.push({ percent: number(data.pressure.percent), links: number(data.pressure.database_links), at: lastObserved });
     if (samples.length > 60) samples.shift();

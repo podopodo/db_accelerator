@@ -4,7 +4,7 @@ Update one version row only after its `README.md` exit gate is complete.
 
 - [x] `V0.0.1` — 6/6 tasks — foundation and proof plan.
 - [x] `V0.0.2` — 6/6 tasks — transparent MySQL protocol path.
-- [ ] `V0.0.3` — 0/6 tasks — sessions and transaction correctness.
+- [x] `V0.0.3` — 6/6 tasks — sessions and transaction correctness.
 - [ ] `V0.0.4` — 0/6 tasks — pooling, scheduling, and fan-in.
 - [ ] `V0.1.0` — 0/9 tasks — operable alpha with professional responsive GUI.
 - [ ] `V0.2.0` — 0/7 tasks — schema-aware read acceleration.
@@ -14,7 +14,7 @@ Update one version row only after its `README.md` exit gate is complete.
 - [ ] `V1.5.0` — 0/7 tasks — identified atomic operations.
 - [ ] `V2.0.0` — 0/7 tasks — stable atomic platform.
 
-Total: 12/71 tasks complete.
+Total: 18/71 tasks complete.
 
 ## Update rule
 

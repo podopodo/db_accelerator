@@ -18,6 +18,12 @@ func TestResponsePayloads(t *testing.T) {
 	}
 }
 
+func TestPrepareOKPayload(t *testing.T) {
+	if got := hex.EncodeToString(PrepareOKPayload(7, 2, 3, 1)); got != "000700000002000300000100" {
+		t.Fatalf("prepare OK payload=%s", got)
+	}
+}
+
 func TestLengthEncodedBoundaries(t *testing.T) {
 	for value, expected := range map[uint64]string{
 		0: "00", 250: "fa", 251: "fcfb00", 65535: "fcffff", 65536: "fd000001", 1 << 24: "fe0000000100000000",

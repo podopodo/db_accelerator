@@ -19,6 +19,7 @@ const (
 	StatementAutocommitOff StatementKind = "autocommit_off"
 	StatementSetNames      StatementKind = "set_names"
 	StatementUseDatabase   StatementKind = "use_database"
+	StatementWarningCount  StatementKind = "warning_count"
 	StatementUnsupported   StatementKind = "unsupported"
 )
 
@@ -49,6 +50,9 @@ func ClassifySQL(query string) Statement {
 
 	switch fields[0] {
 	case "SELECT", "SHOW", "DESC", "DESCRIBE", "EXPLAIN":
+		if strings.Join(fields, " ") == "SHOW COUNT(*) WARNINGS" {
+			return Statement{Kind: StatementWarningCount, SQL: trimmed}
+		}
 		if reason := unsafeReadReason(upper); reason != "" {
 			return Statement{Kind: StatementUnsupported, SQL: trimmed, Reason: reason}
 		}

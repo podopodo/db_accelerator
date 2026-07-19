@@ -3,10 +3,16 @@ package mysql
 import "encoding/binary"
 
 const (
-	CommandQuit   byte = 0x01
-	CommandInitDB byte = 0x02
-	CommandQuery  byte = 0x03
-	CommandPing   byte = 0x0e
+	CommandQuit             byte = 0x01
+	CommandInitDB           byte = 0x02
+	CommandQuery            byte = 0x03
+	CommandPing             byte = 0x0e
+	CommandStmtPrepare      byte = 0x16
+	CommandStmtExecute      byte = 0x17
+	CommandStmtSendLongData byte = 0x18
+	CommandStmtClose        byte = 0x19
+	CommandStmtReset        byte = 0x1a
+	CommandStmtFetch        byte = 0x1c
 )
 
 const (
@@ -80,6 +86,16 @@ func ErrorPayload(code uint16, sqlState, message string) []byte {
 	payload = append(payload, '#')
 	payload = append(payload, sqlState...)
 	payload = append(payload, message...)
+	return payload
+}
+
+func PrepareOKPayload(statementID uint32, columns, parameters, warnings uint16) []byte {
+	payload := []byte{0x00}
+	payload = binary.LittleEndian.AppendUint32(payload, statementID)
+	payload = binary.LittleEndian.AppendUint16(payload, columns)
+	payload = binary.LittleEndian.AppendUint16(payload, parameters)
+	payload = append(payload, 0x00)
+	payload = binary.LittleEndian.AppendUint16(payload, warnings)
 	return payload
 }
 

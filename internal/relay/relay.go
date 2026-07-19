@@ -21,23 +21,27 @@ type Config struct {
 }
 
 type Snapshot struct {
-	Mode              string     `json:"mode"`
-	ListenAddress     string     `json:"listen_address"`
-	UpstreamAddress   string     `json:"upstream_address"`
-	Active            int64      `json:"active"`
-	DatabaseLinks     int64      `json:"database_links"`
-	IdleDatabaseLinks int64      `json:"idle_database_links"`
-	WaitingWork       int64      `json:"waiting_work"`
-	PinnedWork        int64      `json:"pinned_work"`
-	AcceptedTotal     uint64     `json:"accepted_total"`
-	RejectedTotal     uint64     `json:"rejected_total"`
-	DialErrorsTotal   uint64     `json:"dial_errors_total"`
-	RelayErrorsTotal  uint64     `json:"relay_errors_total"`
-	ClientToDBBytes   uint64     `json:"client_to_db_bytes"`
-	DBToClientBytes   uint64     `json:"db_to_client_bytes"`
-	MaxConnections    int        `json:"max_connections"`
-	ClientTLSMode     string     `json:"client_tls_mode"`
-	ClientTLSExpires  *time.Time `json:"client_tls_expires_at,omitempty"`
+	Mode               string            `json:"mode"`
+	ListenAddress      string            `json:"listen_address"`
+	UpstreamAddress    string            `json:"upstream_address"`
+	Active             int64             `json:"active"`
+	DatabaseLinks      int64             `json:"database_links"`
+	IdleDatabaseLinks  int64             `json:"idle_database_links"`
+	WaitingWork        int64             `json:"waiting_work"`
+	PinnedWork         int64             `json:"pinned_work"`
+	AcceptedTotal      uint64            `json:"accepted_total"`
+	RejectedTotal      uint64            `json:"rejected_total"`
+	DialErrorsTotal    uint64            `json:"dial_errors_total"`
+	RelayErrorsTotal   uint64            `json:"relay_errors_total"`
+	ClientToDBBytes    uint64            `json:"client_to_db_bytes"`
+	DBToClientBytes    uint64            `json:"db_to_client_bytes"`
+	ResetDiscardsTotal uint64            `json:"reset_discards_total"`
+	CommitGeneration   uint64            `json:"commit_generation"`
+	RejectionReasons   map[string]uint64 `json:"rejection_reasons,omitempty"`
+	PinReasons         map[string]uint64 `json:"pin_reasons,omitempty"`
+	MaxConnections     int               `json:"max_connections"`
+	ClientTLSMode      string            `json:"client_tls_mode"`
+	ClientTLSExpires   *time.Time        `json:"client_tls_expires_at,omitempty"`
 }
 
 // Server preserves the upstream wire protocol byte-for-byte. It deliberately
