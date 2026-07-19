@@ -146,6 +146,9 @@ jobs:
         run: |
           prerelease=""
           if [ "$PRERELEASE" = "true" ]; then prerelease="--prerelease"; fi
+          # Idempotent re-runs: drop any pre-existing release for this tag (keep the
+          # git tag) so a force-retagged run attaches binaries cleanly.
+          gh release delete "$TAG" --yes --cleanup-tag=false 2>/dev/null || true
           gh release create "$TAG" release/* \
             --target "$GITHUB_SHA" \
             --title "[${TITLE_PREFIX}] Database Accelerator ${TAG}" \
