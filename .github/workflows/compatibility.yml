@@ -20,9 +20,11 @@ jobs:
           - name: MySQL 8.4
             image: mysql:8.4
             prefix: DBA_TEST_MYSQL
+            health_cmd: mysqladmin ping -h 127.0.0.1 -pdba-ci-only-password
           - name: MariaDB 11.4
             image: mariadb:11.4
             prefix: DBA_TEST_MARIADB
+            health_cmd: mariadb-admin ping -h 127.0.0.1 -pdba-ci-only-password
     services:
       database:
         image: ${{ matrix.image }}
@@ -32,10 +34,11 @@ jobs:
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -pdba-ci-only-password"
+          --health-cmd="${{ matrix.health_cmd }}"
           --health-interval=5s
           --health-timeout=5s
           --health-retries=20
+          --health-start-period=30s
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
