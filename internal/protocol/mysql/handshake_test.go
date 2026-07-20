@@ -131,7 +131,7 @@ func TestParseRejectsUnsupportedCompression(t *testing.T) {
 	}
 }
 
-func TestParseRejectsUnadvertisedMultiStatements(t *testing.T) {
+func TestParseDoesNotNegotiateClientOnlyMultiStatements(t *testing.T) {
 	config := DefaultHandshakeConfig(7)
 	config.Capabilities &^= ClientMultiStatements
 	handshake, err := NewHandshake(config)
@@ -139,8 +139,12 @@ func TestParseRejectsUnadvertisedMultiStatements(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := buildHandshakeResponse(config.Capabilities|ClientMultiStatements, 45, "user", nil, "", DefaultAuthPlugin, nil)
-	if _, err := handshake.ParseResponse(payload); !errors.Is(err, ErrUnsupportedCapability) {
-		t.Fatalf("multi-statement error = %v", err)
+	response, err := handshake.ParseResponse(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Negotiated&ClientMultiStatements != 0 {
+		t.Fatal("client-only multi-statements capability was negotiated")
 	}
 }
 

@@ -169,9 +169,13 @@ func TestIntegrationPooledGatewayTransactionsAndFanIn(t *testing.T) {
 		t.Fatal(err)
 	}
 	multiStatementClient := sql.OpenDB(multiStatementConnector)
-	if err := multiStatementClient.Ping(); err == nil {
+	if err := multiStatementClient.Ping(); err != nil {
 		multiStatementClient.Close()
-		t.Fatal("unsupported multi-statement client completed handshake")
+		t.Fatalf("client-only multi-statement flag blocked handshake: %v", err)
+	}
+	if _, err := multiStatementClient.Exec("SELECT 1; SELECT 2"); err == nil {
+		multiStatementClient.Close()
+		t.Fatal("unsupported multi-statement SQL reached the upstream path")
 	}
 	_ = multiStatementClient.Close()
 
